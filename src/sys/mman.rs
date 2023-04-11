@@ -1,10 +1,10 @@
 //! Memory management declarations.
 
 use crate::errno::Errno;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
 use crate::NixPath;
 use crate::Result;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
 #[cfg(feature = "fs")]
 use crate::{fcntl::OFlag, sys::stat::Mode};
 use libc::{self, c_int, c_void, off_t, size_t};
@@ -59,7 +59,7 @@ libc_bitflags! {
         /// Put the mapping into the first 2GB of the process address space.
         #[cfg(any(all(any(target_os = "android", target_os = "linux"),
                       any(target_arch = "x86", target_arch = "x86_64")),
-                  all(target_os = "linux", target_env = "musl", any(target_arch = "x86", target_arch = "x86_64")),
+                  all(target_os = "linux", any(target_env = "musl", target_env = "ohos"), any(target_arch = "x86", target_arch = "x86_64")),
                   all(target_os = "freebsd", target_pointer_width = "64")))]
         #[cfg_attr(docsrs, doc(cfg(all())))]
         MAP_32BIT;
@@ -555,7 +555,7 @@ pub unsafe fn msync(
     Errno::result(libc::msync(addr, length, flags.bits())).map(drop)
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
 feature! {
 #![feature = "fs"]
 /// Creates and opens a new, or opens an existing, POSIX shared memory object.
@@ -590,7 +590,7 @@ pub fn shm_open<P>(
 /// For more information, see [`shm_unlink(3)`].
 ///
 /// [`shm_unlink(3)`]: https://man7.org/linux/man-pages/man3/shm_unlink.3.html
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_env = "ohos")))]
 pub fn shm_unlink<P: ?Sized + NixPath>(name: &P) -> Result<()> {
     let ret =
         name.with_nix_path(|cstr| unsafe { libc::shm_unlink(cstr.as_ptr()) })?;

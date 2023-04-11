@@ -51,6 +51,7 @@ pub fn memfd_create(name: &CStr, flags: MemFdCreateFlag) -> Result<RawFd> {
                     // If the OS is Linux, gnu and musl expose a memfd_create symbol but not uclibc
                     target_env = "gnu",
                     target_env = "musl",
+                    target_env = "ohos",
                 )))]
             {
                 libc::memfd_create(name.as_ptr(), flags.bits())
