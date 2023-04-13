@@ -58,7 +58,7 @@ libc_bitflags!(
         #[cfg_attr(docsrs, doc(cfg(all())))]
         ST_NODIRATIME;
         /// Update access time relative to modify/change time
-        #[cfg(any(target_os = "android", all(target_os = "linux", not(target_env = "musl"))))]
+        #[cfg(any(target_os = "android", all(target_os = "linux", not(any(target_env = "musl", target_env = "ohos")))))]
         #[cfg_attr(docsrs, doc(cfg(all())))]
         ST_RELATIME;
     }

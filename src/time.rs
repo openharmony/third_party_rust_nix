@@ -162,7 +162,7 @@ impl ClockId {
     #[cfg(any(
         target_os = "emscripten",
         target_os = "fuchsia",
-        all(target_os = "linux", target_env = "musl")
+        all(target_os = "linux", any(target_env = "musl", target_env = "ohos"))
     ))]
     #[cfg_attr(docsrs, doc(cfg(all())))]
     pub const CLOCK_SGI_CYCLE: ClockId = ClockId(libc::CLOCK_SGI_CYCLE);

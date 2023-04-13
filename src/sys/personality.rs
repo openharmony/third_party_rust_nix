@@ -20,7 +20,7 @@ libc_bitflags! {
         /// [`mmap(2)`]: https://man7.org/linux/man-pages/man2/mmap.2.html
         ADDR_LIMIT_3GB;
         /// User-space function pointers to signal handlers point to descriptors.
-        #[cfg(not(any(target_env = "musl", target_env = "uclibc")))]
+        #[cfg(not(any(target_env = "musl", target_env = "ohos", target_env = "uclibc")))]
         #[cfg_attr(docsrs, doc(cfg(all())))]
         FDPIC_FUNCPTRS;
         /// Map page 0 as read-only.
@@ -42,7 +42,7 @@ libc_bitflags! {
         /// version number.
         ///
         /// [`uname(2)`]: https://man7.org/linux/man-pages/man2/uname.2.html
-        #[cfg(not(any(target_env = "musl", target_env = "uclibc")))]
+        #[cfg(not(any(target_env = "musl", target_env = "ohos", target_env = "uclibc")))]
         #[cfg_attr(docsrs, doc(cfg(all())))]
         UNAME26;
         /// No effects.

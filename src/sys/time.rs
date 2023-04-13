@@ -1,4 +1,4 @@
-#[cfg_attr(target_env = "musl", allow(deprecated))]
+#[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))]
 // https://github.com/rust-lang/libc/issues/1848
 pub use libc::{suseconds_t, time_t};
 use libc::{timespec, timeval};
@@ -256,7 +256,7 @@ impl PartialOrd for TimeSpec {
 
 impl TimeValLike for TimeSpec {
     #[inline]
-    #[cfg_attr(target_env = "musl", allow(deprecated))]
+    #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))]
     // https://github.com/rust-lang/libc/issues/1848
     fn seconds(seconds: i64) -> TimeSpec {
         assert!(
@@ -290,7 +290,7 @@ impl TimeValLike for TimeSpec {
 
     /// Makes a new `TimeSpec` with given number of nanoseconds.
     #[inline]
-    #[cfg_attr(target_env = "musl", allow(deprecated))]
+    #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))]
     // https://github.com/rust-lang/libc/issues/1848
     fn nanoseconds(nanoseconds: i64) -> TimeSpec {
         let (secs, nanos) = div_mod_floor_64(nanoseconds, NANOS_PER_SEC);
@@ -333,7 +333,7 @@ impl TimeValLike for TimeSpec {
 
 impl TimeSpec {
     /// Construct a new `TimeSpec` from its components
-    #[cfg_attr(target_env = "musl", allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
+    #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
     pub const fn new(seconds: time_t, nanoseconds: timespec_tv_nsec_t) -> Self {
         let mut ts = zero_init_timespec();
         ts.tv_sec = seconds;
@@ -349,7 +349,7 @@ impl TimeSpec {
         }
     }
 
-    #[cfg_attr(target_env = "musl", allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
+    #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
     pub const fn tv_sec(&self) -> time_t {
         self.0.tv_sec
     }
@@ -358,7 +358,7 @@ impl TimeSpec {
         self.0.tv_nsec
     }
 
-    #[cfg_attr(target_env = "musl", allow(deprecated))]
+    #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))]
     // https://github.com/rust-lang/libc/issues/1848
     pub const fn from_duration(duration: Duration) -> Self {
         let mut ts = zero_init_timespec();
@@ -500,7 +500,7 @@ impl TimeValLike for TimeVal {
             "TimeVal out of bounds; seconds={}",
             seconds
         );
-        #[cfg_attr(target_env = "musl", allow(deprecated))]
+        #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))]
         // https://github.com/rust-lang/libc/issues/1848
         TimeVal(timeval {
             tv_sec: seconds as time_t,
@@ -525,7 +525,7 @@ impl TimeValLike for TimeVal {
             (TV_MIN_SECONDS..=TV_MAX_SECONDS).contains(&secs),
             "TimeVal out of bounds"
         );
-        #[cfg_attr(target_env = "musl", allow(deprecated))]
+        #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))]
         // https://github.com/rust-lang/libc/issues/1848
         TimeVal(timeval {
             tv_sec: secs as time_t,
@@ -543,7 +543,7 @@ impl TimeValLike for TimeVal {
             (TV_MIN_SECONDS..=TV_MAX_SECONDS).contains(&secs),
             "TimeVal out of bounds"
         );
-        #[cfg_attr(target_env = "musl", allow(deprecated))]
+        #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))]
         // https://github.com/rust-lang/libc/issues/1848
         TimeVal(timeval {
             tv_sec: secs as time_t,
@@ -580,7 +580,7 @@ impl TimeValLike for TimeVal {
 
 impl TimeVal {
     /// Construct a new `TimeVal` from its components
-    #[cfg_attr(target_env = "musl", allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
+    #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
     pub const fn new(seconds: time_t, microseconds: suseconds_t) -> Self {
         Self(timeval {
             tv_sec: seconds,
@@ -596,7 +596,7 @@ impl TimeVal {
         }
     }
 
-    #[cfg_attr(target_env = "musl", allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
+    #[cfg_attr(any(target_env = "musl", target_env = "ohos"), allow(deprecated))] // https://github.com/rust-lang/libc/issues/1848
     pub const fn tv_sec(&self) -> time_t {
         self.0.tv_sec
     }
