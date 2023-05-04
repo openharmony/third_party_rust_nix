@@ -5,6 +5,7 @@
 
 [Documentation (Releases)](https://docs.rs/nix/)
 
+## 引入背景
 Nix试图为各种*nix平台的API提供友好的绑定（Linux、Darwin、...)。对于许多系统API，Nix提供了一个安全的替代方案，以取代[libc crate](https://github.com/rust-lang/libc)所暴露的不安全API。 具体做法是用类型/抽象来包装libc的功能，强制执行合法、安全的使用。
 
 Nix提供一个例子对比与libc系统调用的区别
@@ -17,7 +18,7 @@ pub unsafe extern fn gethostname(name: *mut c_char, len: size_t) -> c_int;
 // nix api (returns a nix::Result<OsString>)
 pub fn gethostname() -> Result<OsString>;
 ```
-## 使用
+## nix在OH中的使用
 在"BUILD.gn"中使用deps字段添加对num-traits的crates的依赖，例如：
 
 ```BUILD.gn
@@ -34,3 +35,9 @@ nix在Rust 1.56.1及更高版本上得到支持。
 ## License
 
 Nix使用MIT License。 更多细节见[LICENSE](LICENSE)。
+
+## 开发者贡献
+
+在使用该工具的过程中有任何问题欢迎开发者在社区issue中反馈。
+
+<br>
