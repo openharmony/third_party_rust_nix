@@ -3,7 +3,7 @@
     "Name": "nix",
     "License": "MIT",
     "License File": "LICENSE",
-    "Version Number": "v0.26.2",
+    "Version Number": "0.26.2",
     "Owner": "fangting12@huawei.com",
     "Upstream URL": "https://github.com/nix-rust/nix",
     "Description": "A Rust library that provides support for interacting with Unix-like operating systems."
