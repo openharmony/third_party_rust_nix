@@ -104,7 +104,7 @@ libc_bitflags!(
         #[cfg(any(target_os = "dragonfly",
                   target_os = "freebsd",
                   target_os = "ios",
-                  all(target_os = "linux", not(any(target_env = "musl", target_env = "ohos"))),
+                  all(target_os = "linux", not(target_env = "musl")),
                   target_os = "macos",
                   target_os = "netbsd",
                   target_os = "openbsd",
@@ -638,7 +638,7 @@ pub fn vmsplice(
 }
 }
 
-#[cfg(any(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 #[cfg(feature = "fs")]
 libc_bitflags!(
     /// Mode argument flags for fallocate determining operation performed on a given range.
@@ -678,7 +678,7 @@ feature! {
 ///
 /// Allows the caller to directly manipulate the allocated disk space for the
 /// file referred to by fd.
-#[cfg(any(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 #[cfg(feature = "fs")]
 pub fn fallocate(
     fd: RawFd,

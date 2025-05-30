@@ -20,7 +20,7 @@ ohos_cargo_crate("lib") {
 
     sources = ["src/lib.rs"]
     edition = "2018"
-    cargo_pkg_version = "0.26.2"
+    cargo_pkg_version = "0.26.4"
     cargo_pkg_authors = "The nix-rust Project Developers"
     cargo_pkg_name = "nix"
     cargo_pkg_description = "Rust friendly bindings to *nix APIs"
