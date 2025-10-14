@@ -61,11 +61,32 @@ pull' model described there.
 Please make pull requests against the `master` branch.
 
 If you change the API by way of adding, removing or changing something or if
-you fix a bug, please add an appropriate note to the [change log][cl]. We
-follow the conventions of [Keep A CHANGELOG][kacl].
+you fix a bug, please add an appropriate note, every note should be a new markdown 
+file under the [changelog directory][cl] stating the change made by your pull request, 
+the filename should be in the following format:
 
-[cl]: https://github.com/nix-rust/nix/blob/master/CHANGELOG.md
-[kacl]: https://github.com/olivierlacan/keep-a-changelog/tree/18adb5f5be7a898d046f6a4acb93e39dcf40c4ad
+```
+<PULL_REQUEST_ID>.<TYPE>.md
+```
+
+These are 4 `TYPE`s available:
+
+1. `added`
+2. `changed`
+3. `fixed`
+4. `removed`
+
+Let's say you have added a new API to nix, then a change log like this should
+be added (assume it is PR #0)
+
+```md
+# file: 0.added.md
+Added a new API xxx
+```
+
+And having multiple change logs for one PR is allowed.
+
+[cl]: https://github.com/nix-rust/nix/tree/master/changelog
 [pr-docs]: https://help.github.com/articles/using-pull-requests/
 
 ## Testing
@@ -75,36 +96,26 @@ requests to include tests where they make sense. For example, when fixing a bug,
 add a test that would have failed without the fix.
 
 After you've made your change, make sure the tests pass in your development
-environment. We also have [continuous integration set up on
-Cirrus-CI][cirrus-ci], which might find some issues on other platforms. The CI
-will run once you open a pull request.
-
-There is also infrastructure for running tests for other targets
-locally.  More information is available in the [CI Readme][ci-readme].
+environment. We also have continuous integration set up on [Cirrus-CI][cirrus-ci]
+and GitHub Action, which might find some issues on other platforms. The CI will
+run once you open a pull request.
 
 [cirrus-ci]: https://cirrus-ci.com/github/nix-rust/nix
-[ci-readme]: ci/README.md
 
 ### Disabling a test in the CI environment
 
-Sometimes there are features that cannot be tested in the CI environment.
-To stop a test from running under CI, add `skip_if_cirrus!()` to it. Please
+Sometimes there are features that cannot be tested in the CI environment. To
+stop a test from running under CI, add `skip_if_cirrus!()` to it. Please
 describe the reason it shouldn't run under CI, and a link to an issue if
-possible!
+possible! Other tests cannot be run under QEMU, which is used for some
+architectures. To skip them, add a `#[cfg_attr(qemu, ignore)]` attribute to
+the test.
 
-## bors, the bot who merges all the PRs
+## GitHub Merge Queues
 
-All pull requests are merged via [bors], an integration bot. After the
-pull request has been reviewed, the reviewer will leave a comment like
-
-> bors r+
-
-to let bors know that it was approved. Then bors will check that it passes
-tests when merged with the latest changes in the `master` branch, and
-merge if the tests succeed.
-
-[bors]: https://bors-ng.github.io/
-
+We use GitHub merge queues to ensure that subtle merge conflicts won't result
+in failing code. If you add or remove a CI job, remember to adjust the
+required status checks in the repository's branch protection rules!
 
 ## API conventions
 

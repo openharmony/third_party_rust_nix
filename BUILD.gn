@@ -19,8 +19,8 @@ ohos_cargo_crate("lib") {
     crate_root = "src/lib.rs"
 
     sources = ["src/lib.rs"]
-    edition = "2018"
-    cargo_pkg_version = "0.26.4"
+    edition = "2021"
+    cargo_pkg_version = "0.30.1"
     cargo_pkg_authors = "The nix-rust Project Developers"
     cargo_pkg_name = "nix"
     cargo_pkg_description = "Rust friendly bindings to *nix APIs"
@@ -30,14 +30,15 @@ ohos_cargo_crate("lib") {
         "//third_party/rust/crates/libc:lib",
         "//third_party/rust/crates/memoffset:lib",
         "//third_party/rust/crates/pin-utils:lib",
-        "//third_party/rust/crates/static-assertions-rs:lib",
     ]
     features = [
         "acct",
+        "aio",
         "default",
         "dir",
         "env",
         "event",
+        "fanotify",
         "feature",
         "fs",
         "hostname",
@@ -47,9 +48,9 @@ ohos_cargo_crate("lib") {
         "memoffset",
         "mman",
         "mount",
+        "mqueue",
         "net",
         "personality",
-        "pin-utils",
         "poll",
         "process",
         "pthread",
@@ -60,6 +61,7 @@ ohos_cargo_crate("lib") {
         "sched",
         "signal",
         "socket",
+        "syslog",
         "term",
         "time",
         "ucontext",
