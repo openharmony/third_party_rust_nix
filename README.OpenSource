@@ -3,14 +3,15 @@
     "Name": "nix",
     "License": "MIT",
     "License File": "LICENSE",
-    "Version Number": "0.26.4",
+    "Version Number": "0.30.1",
     "Owner": "fangting12@huawei.com",
     "Upstream URL": "https://github.com/nix-rust/nix",
     "Description": "A Rust library that provides support for interacting with Unix-like operating systems.",
     "Dependencies": [
-      "Static Assertions",
+      "libc",
+      "bitflags"
       "memoffset",
-      "autocfg",
+      "cfg-if",
       "pin-utils"
     ]
   }

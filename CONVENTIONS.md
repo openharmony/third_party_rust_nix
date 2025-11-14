@@ -17,8 +17,15 @@ We follow the conventions laid out in [Keep A CHANGELOG][kacl].
 
 ## libc constants, functions and structs
 
-We do not define integer constants ourselves, but use or reexport them from the
-[libc crate][libc].
+We do not define ffi functions or their associated constants and types ourselves,
+but use or reexport them from the [libc crate][libc], if your PR uses something 
+that does not exist in the libc crate, you should add it to libc first. Once 
+your libc PR gets merged, you can adjust our `libc` dependency to include that 
+libc change. Use a git dependency if necessary.
+
+```toml
+libc = { git = "https://github.com/rust-lang/libc", rev = "the commit includes your libc PR", ... }
+```
 
 We use the functions exported from [libc][libc] instead of writing our own
 `extern` declarations.
@@ -36,6 +43,16 @@ impl SigSet {
 ```
 
 When creating newtypes, we use Rust's `CamelCase` type naming convention.
+
+## cfg gates
+
+When creating operating-system-specific functionality, we gate it by
+`#[cfg(target_os = ...)]`. If **MORE THAN ONE operating system** is affected, we
+prefer to use the cfg aliases defined in build.rs, like `#[cfg(bsd)]`.
+
+Please **DO NOT** use cfg aliases for **ONLY ONE** system as [they are bad][mismatched_target_os].
+
+[mismatched_target_os]: https://rust-lang.github.io/rust-clippy/master/index.html#/mismatched_target_os
 
 ## Bitflags
 
@@ -57,9 +74,9 @@ libc_bitflags!{
         PROT_READ;
         PROT_WRITE;
         PROT_EXEC;
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(linux_android)]
         PROT_GROWSDOWN;
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(linux_android)]
         PROT_GROWSUP;
     }
 }
@@ -84,3 +101,54 @@ the variable.
 [enum]: https://doc.rust-lang.org/reference.html#enumerations
 [libc]: https://crates.io/crates/libc/
 [std_MaybeUninit]: https://doc.rust-lang.org/stable/std/mem/union.MaybeUninit.html
+
+## Pointer type casting
+
+We prefer [`cast()`], [`cast_mut()`] and [`cast_const()`] to cast pointer types
+over the `as` keyword because it is much more difficult to accidentally change
+type or mutability that way.
+
+[`cast()`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.cast
+[`cast_mut()`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.cast_mut
+[`cast_const()`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.cast_const
+
+## Remove/deprecate an interface
+
+In Nix, if we want to remove something, we don't do it immediately, instead, we
+deprecate it for at least one release before removing it.
+
+To deprecate an interface, put the following attribute on the top of it:
+
+```
+#[deprecated(since = "<Version>", note = "<Note to our user>")]
+```
+
+`<Version>` is the version where this interface will be deprecated, in most 
+cases, it will be the version of the next release. And a user-friendly note 
+should be added. Normally, there should be a new interface that will replace
+the old one, so a note should be something like: "`<New Interface>` should be 
+used instead".
+
+## Where to put a test
+
+If you want to add a test for a feature that is in `xxx.rs`, then the test should
+be put in the corresponding `test_xxx.rs` file unless you cannot do this, e.g.,
+the test involves private stuff and thus cannot be added outside of Nix, then
+it is allowed to leave the test in `xxx.rs`.
+
+## Syscall/libc function error handling
+
+Most syscall and libc functions return an [`ErrnoSentinel`][trait] value on error,
+we has a nice utility function [`Errno::result()`][util] to convert it to the 
+Rusty `Result<T, Errno>` type, e.g., here is how `dup(2)` uses it:
+
+```rs
+pub fn dup(oldfd: RawFd) -> Result<RawFd> {
+    let res = unsafe { libc::dup(oldfd) };
+
+    Errno::result(res)
+}
+```
+
+[trait]: https://docs.rs/nix/latest/nix/errno/trait.ErrnoSentinel.html
+[util]: https://docs.rs/nix/latest/nix/errno/enum.Errno.html#method.result

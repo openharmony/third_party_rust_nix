@@ -1,72 +1,14 @@
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(linux_android)]
 use crate::*;
-use libc::{c_char, sockaddr_storage};
-#[allow(deprecated)]
-use nix::sys::socket::InetAddr;
-use nix::sys::socket::{
-    getsockname, sockaddr, sockaddr_in6, AddressFamily, UnixAddr,
-};
+use libc::c_char;
+use nix::sys::socket::{getsockname, AddressFamily, UnixAddr};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::mem::{self, MaybeUninit};
-use std::net::{self, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::os::unix::io::RawFd;
+use std::net::{SocketAddrV4, SocketAddrV6};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 use std::slice;
 use std::str::FromStr;
-
-#[allow(deprecated)]
-#[test]
-pub fn test_inetv4_addr_to_sock_addr() {
-    let actual: net::SocketAddr = FromStr::from_str("127.0.0.1:3000").unwrap();
-    let addr = InetAddr::from_std(&actual);
-
-    match addr {
-        InetAddr::V4(addr) => {
-            let ip: u32 = 0x7f00_0001;
-            let port: u16 = 3000;
-            let saddr = addr.sin_addr.s_addr;
-
-            assert_eq!(saddr, ip.to_be());
-            assert_eq!(addr.sin_port, port.to_be());
-        }
-        _ => panic!("nope"),
-    }
-
-    assert_eq!(addr.to_string(), "127.0.0.1:3000");
-
-    let inet = addr.to_std();
-    assert_eq!(actual, inet);
-}
-
-#[allow(deprecated)]
-#[test]
-pub fn test_inetv4_addr_roundtrip_sockaddr_storage_to_addr() {
-    use nix::sys::socket::{sockaddr_storage_to_addr, SockAddr};
-
-    let actual: net::SocketAddr = FromStr::from_str("127.0.0.1:3000").unwrap();
-    let addr = InetAddr::from_std(&actual);
-    let sockaddr = SockAddr::new_inet(addr);
-
-    let (storage, ffi_size) = {
-        let mut storage = MaybeUninit::<sockaddr_storage>::zeroed();
-        let storage_ptr = storage.as_mut_ptr().cast::<sockaddr>();
-        let (ffi_ptr, ffi_size) = sockaddr.as_ffi_pair();
-        assert_eq!(mem::size_of::<sockaddr>(), ffi_size as usize);
-        unsafe {
-            storage_ptr.copy_from_nonoverlapping(ffi_ptr as *const sockaddr, 1);
-            (storage.assume_init(), ffi_size)
-        }
-    };
-
-    let from_storage =
-        sockaddr_storage_to_addr(&storage, ffi_size as usize).unwrap();
-    assert_eq!(from_storage, sockaddr);
-    let from_storage =
-        sockaddr_storage_to_addr(&storage, mem::size_of::<sockaddr_storage>())
-            .unwrap();
-    assert_eq!(from_storage, sockaddr);
-}
 
 #[cfg(target_os = "linux")]
 #[cfg_attr(qemu, ignore)]
@@ -79,7 +21,7 @@ pub fn test_timestamping() {
     };
     use std::io::{IoSlice, IoSliceMut};
 
-    let sock_addr = SockaddrIn::from_str("127.0.0.1:6790").unwrap();
+    let sock_addr = SockaddrIn::from_str("127.0.0.1:6797").unwrap();
 
     let ssock = socket(
         AddressFamily::Inet,
@@ -96,9 +38,9 @@ pub fn test_timestamping() {
         None,
     )
     .unwrap();
-    nix::sys::socket::bind(rsock, &sock_addr).unwrap();
+    nix::sys::socket::bind(rsock.as_raw_fd(), &sock_addr).unwrap();
 
-    setsockopt(rsock, Timestamping, &TimestampingFlag::all()).unwrap();
+    setsockopt(&rsock, Timestamping, &TimestampingFlag::all()).unwrap();
 
     let sbuf = [0u8; 2048];
     let mut rbuf = [0u8; 2048];
@@ -107,11 +49,13 @@ pub fn test_timestamping() {
     let mut iov2 = [IoSliceMut::new(&mut rbuf)];
 
     let mut cmsg = cmsg_space!(nix::sys::socket::Timestamps);
-    sendmsg(ssock, &iov1, &[], flags, Some(&sock_addr)).unwrap();
-    let recv = recvmsg::<()>(rsock, &mut iov2, Some(&mut cmsg), flags).unwrap();
+    sendmsg(ssock.as_raw_fd(), &iov1, &[], flags, Some(&sock_addr)).unwrap();
+    let recv =
+        recvmsg::<()>(rsock.as_raw_fd(), &mut iov2, Some(&mut cmsg), flags)
+            .unwrap();
 
     let mut ts = None;
-    for c in recv.cmsgs() {
+    for c in recv.cmsgs().unwrap() {
         if let ControlMessageOwned::ScmTimestampsns(timestamps) = c {
             ts = Some(timestamps.system);
         }
@@ -128,42 +72,124 @@ pub fn test_timestamping() {
     assert!(std::time::Duration::from(diff).as_secs() < 60);
 }
 
-#[allow(deprecated)]
+#[cfg(target_os = "freebsd")]
 #[test]
-pub fn test_inetv6_addr_roundtrip_sockaddr_storage_to_addr() {
-    use nix::sys::socket::{sockaddr_storage_to_addr, SockAddr};
-
-    let port: u16 = 3000;
-    let flowinfo: u32 = 1;
-    let scope_id: u32 = 2;
-    let ip: Ipv6Addr = "fe80::1".parse().unwrap();
-
-    let actual =
-        SocketAddr::V6(SocketAddrV6::new(ip, port, flowinfo, scope_id));
-    let addr = InetAddr::from_std(&actual);
-    let sockaddr = SockAddr::new_inet(addr);
-
-    let (storage, ffi_size) = {
-        let mut storage = MaybeUninit::<sockaddr_storage>::zeroed();
-        let storage_ptr = storage.as_mut_ptr().cast::<sockaddr_in6>();
-        let (ffi_ptr, ffi_size) = sockaddr.as_ffi_pair();
-        assert_eq!(mem::size_of::<sockaddr_in6>(), ffi_size as usize);
-        unsafe {
-            storage_ptr.copy_from_nonoverlapping(
-                (ffi_ptr as *const sockaddr).cast::<sockaddr_in6>(),
-                1,
-            );
-            (storage.assume_init(), ffi_size)
-        }
+pub fn test_timestamping_realtime() {
+    use nix::sys::socket::{
+        recvmsg, sendmsg, setsockopt, socket, sockopt::ReceiveTimestamp,
+        sockopt::TsClock, ControlMessageOwned, MsgFlags, SockFlag, SockType,
+        SockaddrIn, SocketTimestamp,
     };
+    use std::io::{IoSlice, IoSliceMut};
 
-    let from_storage =
-        sockaddr_storage_to_addr(&storage, ffi_size as usize).unwrap();
-    assert_eq!(from_storage, sockaddr);
-    let from_storage =
-        sockaddr_storage_to_addr(&storage, mem::size_of::<sockaddr_storage>())
+    let sock_addr = SockaddrIn::from_str("127.0.0.1:6792").unwrap();
+
+    let ssock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .expect("send socket failed");
+
+    let rsock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .unwrap();
+    nix::sys::socket::bind(rsock.as_raw_fd(), &sock_addr).unwrap();
+
+    setsockopt(&rsock, ReceiveTimestamp, &true).unwrap();
+    setsockopt(&rsock, TsClock, &SocketTimestamp::SO_TS_REALTIME).unwrap();
+
+    let sbuf = [0u8; 2048];
+    let mut rbuf = [0u8; 2048];
+    let flags = MsgFlags::empty();
+    let iov1 = [IoSlice::new(&sbuf)];
+    let mut iov2 = [IoSliceMut::new(&mut rbuf)];
+
+    let mut cmsg = cmsg_space!(nix::sys::time::TimeVal);
+    sendmsg(ssock.as_raw_fd(), &iov1, &[], flags, Some(&sock_addr)).unwrap();
+    let recv =
+        recvmsg::<()>(rsock.as_raw_fd(), &mut iov2, Some(&mut cmsg), flags)
             .unwrap();
-    assert_eq!(from_storage, sockaddr);
+
+    let mut ts = None;
+    for c in recv.cmsgs().unwrap() {
+        if let ControlMessageOwned::ScmRealtime(timeval) = c {
+            ts = Some(timeval);
+        }
+    }
+    let ts = ts.expect("ScmRealtime is present");
+    let sys_time =
+        ::nix::time::clock_gettime(::nix::time::ClockId::CLOCK_REALTIME)
+            .unwrap();
+    let diff = if ts > sys_time {
+        ts - sys_time
+    } else {
+        sys_time - ts
+    };
+    assert!(std::time::Duration::from(diff).as_secs() < 60);
+}
+
+#[cfg(target_os = "freebsd")]
+#[test]
+pub fn test_timestamping_monotonic() {
+    use nix::sys::socket::{
+        recvmsg, sendmsg, setsockopt, socket, sockopt::ReceiveTimestamp,
+        sockopt::TsClock, ControlMessageOwned, MsgFlags, SockFlag, SockType,
+        SockaddrIn, SocketTimestamp,
+    };
+    use std::io::{IoSlice, IoSliceMut};
+
+    let sock_addr = SockaddrIn::from_str("127.0.0.1:6803").unwrap();
+
+    let ssock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .expect("send socket failed");
+
+    let rsock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .unwrap();
+    nix::sys::socket::bind(rsock.as_raw_fd(), &sock_addr).unwrap();
+
+    setsockopt(&rsock, ReceiveTimestamp, &true).unwrap();
+    setsockopt(&rsock, TsClock, &SocketTimestamp::SO_TS_MONOTONIC).unwrap();
+
+    let sbuf = [0u8; 2048];
+    let mut rbuf = [0u8; 2048];
+    let flags = MsgFlags::empty();
+    let iov1 = [IoSlice::new(&sbuf)];
+    let mut iov2 = [IoSliceMut::new(&mut rbuf)];
+
+    let mut cmsg = cmsg_space!(nix::sys::time::TimeVal);
+    sendmsg(ssock.as_raw_fd(), &iov1, &[], flags, Some(&sock_addr)).unwrap();
+    let recv =
+        recvmsg::<()>(rsock.as_raw_fd(), &mut iov2, Some(&mut cmsg), flags)
+            .unwrap();
+
+    let mut ts = None;
+    for c in recv.cmsgs().unwrap() {
+        if let ControlMessageOwned::ScmMonotonic(timeval) = c {
+            ts = Some(timeval);
+        }
+    }
+    let ts = ts.expect("ScmMonotonic is present");
+    let sys_time =
+        ::nix::time::clock_gettime(::nix::time::ClockId::CLOCK_MONOTONIC)
+            .unwrap();
+    let diff = sys_time - ts; // Monotonic clock sys_time must be greater
+    assert!(std::time::Duration::from(diff).as_secs() < 60);
 }
 
 #[test]
@@ -172,10 +198,9 @@ pub fn test_path_to_sock_addr() {
     let actual = Path::new(path);
     let addr = UnixAddr::new(actual).unwrap();
 
-    let expect: &[c_char] = unsafe {
-        slice::from_raw_parts(path.as_ptr() as *const c_char, path.len())
-    };
-    assert_eq!(unsafe { &(*addr.as_ptr()).sun_path[..8] }, expect);
+    let expect: &[c_char] =
+        unsafe { slice::from_raw_parts(path.as_ptr().cast(), path.len()) };
+    assert_eq!(unsafe { &(&(*addr.as_ptr()).sun_path)[..8] }, expect);
 
     assert_eq!(addr.path(), Some(actual));
 }
@@ -199,7 +224,7 @@ pub fn test_addr_equality_path() {
     assert_eq!(calculate_hash(&addr1), calculate_hash(&addr2));
 }
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 #[test]
 pub fn test_abstract_sun_path_too_long() {
     let name = String::from("nix\0abstract\0tesnix\0abstract\0tesnix\0abstract\0tesnix\0abstract\0tesnix\0abstract\0testttttnix\0abstract\0test\0make\0sure\0this\0is\0long\0enough");
@@ -207,7 +232,7 @@ pub fn test_abstract_sun_path_too_long() {
     addr.expect_err("assertion failed");
 }
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 #[test]
 pub fn test_addr_equality_abstract() {
     let name = String::from("nix\0abstract\0test");
@@ -223,7 +248,7 @@ pub fn test_addr_equality_abstract() {
 }
 
 // Test getting/setting abstract addresses (without unix socket creation)
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 #[test]
 pub fn test_abstract_uds_addr() {
     let empty = String::new();
@@ -245,7 +270,7 @@ pub fn test_abstract_uds_addr() {
 }
 
 // Test getting an unnamed address (without unix socket creation)
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 #[test]
 pub fn test_unnamed_uds_addr() {
     use crate::nix::sys::socket::SockaddrLike;
@@ -275,8 +300,11 @@ pub fn test_getsockname() {
     )
     .expect("socket failed");
     let sockaddr = UnixAddr::new(&sockname).unwrap();
-    bind(sock, &sockaddr).expect("bind failed");
-    assert_eq!(sockaddr, getsockname(sock).expect("getsockname failed"));
+    bind(sock.as_raw_fd(), &sockaddr).expect("bind failed");
+    assert_eq!(
+        sockaddr,
+        getsockname(sock.as_raw_fd()).expect("getsockname failed")
+    );
 }
 
 #[test]
@@ -291,14 +319,15 @@ pub fn test_socketpair() {
         SockFlag::empty(),
     )
     .unwrap();
-    write(fd1, b"hello").unwrap();
+    write(&fd1, b"hello").unwrap();
     let mut buf = [0; 5];
-    read(fd2, &mut buf).unwrap();
+    read(&fd2, &mut buf).unwrap();
 
     assert_eq!(&buf[..], b"hello");
 }
 
 #[test]
+#[cfg_attr(target_os = "cygwin", ignore)]
 pub fn test_recvmsg_sockaddr_un() {
     use nix::sys::socket::{
         self, bind, socket, AddressFamily, MsgFlags, SockFlag, SockType,
@@ -314,25 +343,26 @@ pub fn test_recvmsg_sockaddr_un() {
     )
     .expect("socket failed");
     let sockaddr = UnixAddr::new(&sockname).unwrap();
-    bind(sock, &sockaddr).expect("bind failed");
+    bind(sock.as_raw_fd(), &sockaddr).expect("bind failed");
 
     // Send a message
     let send_buffer = "hello".as_bytes();
     if let Err(e) = socket::sendmsg(
-        sock,
+        sock.as_raw_fd(),
         &[std::io::IoSlice::new(send_buffer)],
         &[],
         MsgFlags::empty(),
         Some(&sockaddr),
     ) {
-        crate::skip!("Couldn't send ({:?}), so skipping test", e);
+        crate::skip!("Couldn't send ({e:?}), so skipping test");
     }
 
     // Receive the message
     let mut recv_buffer = [0u8; 32];
     let mut iov = [std::io::IoSliceMut::new(&mut recv_buffer)];
     let received =
-        socket::recvmsg(sock, &mut iov, None, MsgFlags::empty()).unwrap();
+        socket::recvmsg(sock.as_raw_fd(), &mut iov, None, MsgFlags::empty())
+            .unwrap();
     // Check the address in the received message
     assert_eq!(sockaddr, received.address.unwrap());
 }
@@ -400,12 +430,12 @@ mod recvfrom {
         )
         .unwrap();
         // Ignore from for stream sockets
-        let _ = sendrecv(fd1, fd2, send, |_, _| {});
+        let _ = sendrecv(fd1.as_raw_fd(), fd2.as_raw_fd(), send, |_, _| {});
     }
 
     #[test]
     pub fn udp() {
-        let std_sa = SocketAddrV4::from_str("127.0.0.1:6789").unwrap();
+        let std_sa = SocketAddrV4::from_str("127.0.0.1:6795").unwrap();
         let sock_addr = SockaddrIn::from(std_sa);
         let rsock = socket(
             AddressFamily::Inet,
@@ -414,7 +444,7 @@ mod recvfrom {
             None,
         )
         .unwrap();
-        bind(rsock, &sock_addr).unwrap();
+        bind(rsock.as_raw_fd(), &sock_addr).unwrap();
         let ssock = socket(
             AddressFamily::Inet,
             SockType::Datagram,
@@ -423,9 +453,9 @@ mod recvfrom {
         )
         .expect("send socket failed");
         let from = sendrecv(
-            rsock,
-            ssock,
-            move |s, m, flags| sendto(s, m, &sock_addr, flags),
+            rsock.as_raw_fd(),
+            ssock.as_raw_fd(),
+            move |s, m, flags| sendto(s.as_raw_fd(), m, &sock_addr, flags),
             |_, _| {},
         );
         // UDP sockets should set the from address
@@ -459,10 +489,10 @@ mod recvfrom {
             )
             .unwrap();
 
-            setsockopt(rsock, UdpGsoSegment, &(segment_size as _))
+            setsockopt(&rsock, UdpGsoSegment, &(segment_size as _))
                 .expect("setsockopt UDP_SEGMENT failed");
 
-            bind(rsock, &sock_addr).unwrap();
+            bind(rsock.as_raw_fd(), &sock_addr).unwrap();
             let ssock = socket(
                 AddressFamily::Inet,
                 SockType::Datagram,
@@ -474,12 +504,18 @@ mod recvfrom {
             let mut num_packets_received: i32 = 0;
 
             sendrecv(
-                rsock,
-                ssock,
+                rsock.as_raw_fd(),
+                ssock.as_raw_fd(),
                 move |s, m, flags| {
                     let iov = [IoSlice::new(m)];
                     let cmsg = ControlMessage::UdpGsoSegments(&segment_size);
-                    sendmsg(s, &iov, &[cmsg], flags, Some(&sock_addr))
+                    sendmsg(
+                        s.as_raw_fd(),
+                        &iov,
+                        &[cmsg],
+                        flags,
+                        Some(&sock_addr),
+                    )
                 },
                 {
                     let num_packets_received_ref = &mut num_packets_received;
@@ -516,17 +552,12 @@ mod recvfrom {
             )
             .unwrap();
 
-            setsockopt(rsock, UdpGroSegment, &true)
+            setsockopt(&rsock, UdpGroSegment, &true)
                 .expect("setsockopt UDP_GRO failed");
         }
     }
 
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "netbsd",
-    ))]
+    #[cfg(any(linux_android, target_os = "freebsd", target_os = "netbsd"))]
     #[test]
     pub fn udp_sendmmsg() {
         use std::io::IoSlice;
@@ -543,7 +574,7 @@ mod recvfrom {
             None,
         )
         .unwrap();
-        bind(rsock, &sock_addr).unwrap();
+        bind(rsock.as_raw_fd(), &sock_addr).unwrap();
         let ssock = socket(
             AddressFamily::Inet,
             SockType::Datagram,
@@ -553,8 +584,8 @@ mod recvfrom {
         .expect("send socket failed");
 
         let from = sendrecv(
-            rsock,
-            ssock,
+            rsock.as_raw_fd(),
+            ssock.as_raw_fd(),
             move |s, m, flags| {
                 let batch_size = 15;
                 let mut iovs = Vec::with_capacity(1 + batch_size);
@@ -588,12 +619,7 @@ mod recvfrom {
         assert_eq!(AddressFamily::Inet, from.unwrap().family().unwrap());
     }
 
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "netbsd",
-    ))]
+    #[cfg(any(linux_android, target_os = "freebsd", target_os = "netbsd"))]
     #[test]
     pub fn udp_recvmmsg() {
         use nix::sys::socket::{recvmmsg, MsgFlags};
@@ -612,7 +638,7 @@ mod recvfrom {
             None,
         )
         .unwrap();
-        bind(rsock, &sock_addr).unwrap();
+        bind(rsock.as_raw_fd(), &sock_addr).unwrap();
         let ssock = socket(
             AddressFamily::Inet,
             SockType::Datagram,
@@ -623,8 +649,13 @@ mod recvfrom {
 
         let send_thread = thread::spawn(move || {
             for _ in 0..NUM_MESSAGES_SENT {
-                sendto(ssock, &DATA[..], &sock_addr, MsgFlags::empty())
-                    .unwrap();
+                sendto(
+                    ssock.as_raw_fd(),
+                    &DATA[..],
+                    &sock_addr,
+                    MsgFlags::empty(),
+                )
+                .unwrap();
             }
         });
 
@@ -641,10 +672,15 @@ mod recvfrom {
         let mut data =
             MultiHeaders::<SockaddrIn>::preallocate(msgs.len(), None);
 
-        let res: Vec<RecvMsg<SockaddrIn>> =
-            recvmmsg(rsock, &mut data, msgs.iter(), MsgFlags::empty(), None)
-                .expect("recvmmsg")
-                .collect();
+        let res: Vec<RecvMsg<SockaddrIn>> = recvmmsg(
+            rsock.as_raw_fd(),
+            &mut data,
+            msgs.iter_mut(),
+            MsgFlags::empty(),
+            None,
+        )
+        .expect("recvmmsg")
+        .collect();
         assert_eq!(res.len(), DATA.len());
 
         for RecvMsg { address, bytes, .. } in res.into_iter() {
@@ -659,12 +695,7 @@ mod recvfrom {
         send_thread.join().unwrap();
     }
 
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "freebsd",
-        target_os = "netbsd",
-    ))]
+    #[cfg(any(linux_android, target_os = "freebsd", target_os = "netbsd"))]
     #[test]
     pub fn udp_recvmmsg_dontwait_short_read() {
         use nix::sys::socket::{recvmmsg, MsgFlags};
@@ -683,7 +714,7 @@ mod recvfrom {
             None,
         )
         .unwrap();
-        bind(rsock, &sock_addr).unwrap();
+        bind(rsock.as_raw_fd(), &sock_addr).unwrap();
         let ssock = socket(
             AddressFamily::Inet,
             SockType::Datagram,
@@ -694,8 +725,13 @@ mod recvfrom {
 
         let send_thread = thread::spawn(move || {
             for _ in 0..NUM_MESSAGES_SENT {
-                sendto(ssock, &DATA[..], &sock_addr, MsgFlags::empty())
-                    .unwrap();
+                sendto(
+                    ssock.as_raw_fd(),
+                    &DATA[..],
+                    &sock_addr,
+                    MsgFlags::empty(),
+                )
+                .unwrap();
             }
         });
         // Ensure we've sent all the messages before continuing so `recvmmsg`
@@ -720,9 +756,9 @@ mod recvfrom {
         );
 
         let res: Vec<RecvMsg<SockaddrIn>> = recvmmsg(
-            rsock,
+            rsock.as_raw_fd(),
             &mut data,
-            msgs.iter(),
+            msgs.iter_mut(),
             MsgFlags::MSG_DONTWAIT,
             None,
         )
@@ -743,10 +779,10 @@ mod recvfrom {
     #[test]
     pub fn udp_inet6() {
         let addr = std::net::Ipv6Addr::from_str("::1").unwrap();
-        let rport = 6789;
+        let rport = 6796;
         let rstd_sa = SocketAddrV6::new(addr, rport, 0, 0);
         let raddr = SockaddrIn6::from(rstd_sa);
-        let sport = 6790;
+        let sport = 6798;
         let sstd_sa = SocketAddrV6::new(addr, sport, 0, 0);
         let saddr = SockaddrIn6::from(sstd_sa);
         let rsock = socket(
@@ -756,12 +792,12 @@ mod recvfrom {
             None,
         )
         .expect("receive socket failed");
-        match bind(rsock, &raddr) {
+        match bind(rsock.as_raw_fd(), &raddr) {
             Err(Errno::EADDRNOTAVAIL) => {
                 println!("IPv6 not available, skipping test.");
                 return;
             }
-            Err(e) => panic!("bind: {}", e),
+            Err(e) => panic!("bind: {e}"),
             Ok(()) => (),
         }
         let ssock = socket(
@@ -771,11 +807,11 @@ mod recvfrom {
             None,
         )
         .expect("send socket failed");
-        bind(ssock, &saddr).unwrap();
+        bind(ssock.as_raw_fd(), &saddr).unwrap();
         let from = sendrecv(
-            rsock,
-            ssock,
-            move |s, m, flags| sendto(s, m, &raddr, flags),
+            rsock.as_raw_fd(),
+            ssock.as_raw_fd(),
+            move |s, m, flags| sendto(s.as_raw_fd(), m, &raddr, flags),
             |_, _| {},
         );
         assert_eq!(AddressFamily::Inet6, from.unwrap().family().unwrap());
@@ -797,7 +833,7 @@ pub fn test_recvmsg_ebadf() {
     let mut iov = [IoSliceMut::new(&mut buf[..])];
 
     let fd = -1; // Bad file descriptor
-    let r = recvmsg::<()>(fd, &mut iov, None, MsgFlags::empty());
+    let r = recvmsg::<()>(fd.as_raw_fd(), &mut iov, None, MsgFlags::empty());
 
     assert_eq!(r.err().unwrap(), Errno::EBADF);
 }
@@ -806,6 +842,7 @@ pub fn test_recvmsg_ebadf() {
 // 2.12.0.  https://bugs.launchpad.net/qemu/+bug/1701808
 #[cfg_attr(qemu, ignore)]
 #[test]
+#[cfg_attr(target_os = "cygwin", ignore)]
 pub fn test_scm_rights() {
     use nix::sys::socket::{
         recvmsg, sendmsg, socketpair, AddressFamily, ControlMessage,
@@ -826,14 +863,19 @@ pub fn test_scm_rights() {
 
     {
         let iov = [IoSlice::new(b"hello")];
-        let fds = [r];
+        let fds = [r.as_raw_fd()];
         let cmsg = ControlMessage::ScmRights(&fds);
         assert_eq!(
-            sendmsg::<()>(fd1, &iov, &[cmsg], MsgFlags::empty(), None).unwrap(),
+            sendmsg::<()>(
+                fd1.as_raw_fd(),
+                &iov,
+                &[cmsg],
+                MsgFlags::empty(),
+                None
+            )
+            .unwrap(),
             5
         );
-        close(r).unwrap();
-        close(fd1).unwrap();
     }
 
     {
@@ -842,14 +884,14 @@ pub fn test_scm_rights() {
         let mut iov = [IoSliceMut::new(&mut buf[..])];
         let mut cmsgspace = cmsg_space!([RawFd; 1]);
         let msg = recvmsg::<()>(
-            fd2,
+            fd2.as_raw_fd(),
             &mut iov,
             Some(&mut cmsgspace),
             MsgFlags::empty(),
         )
         .unwrap();
 
-        for cmsg in msg.cmsgs() {
+        for cmsg in msg.cmsgs().unwrap() {
             if let ControlMessageOwned::ScmRights(fd) = cmsg {
                 assert_eq!(received_r, None);
                 assert_eq!(fd.len(), 1);
@@ -862,22 +904,30 @@ pub fn test_scm_rights() {
         assert!(!msg
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
-        close(fd2).unwrap();
     }
 
     let received_r = received_r.expect("Did not receive passed fd");
     // Ensure that the received file descriptor works
-    write(w, b"world").unwrap();
+    write(&w, b"world").unwrap();
     let mut buf = [0u8; 5];
-    read(received_r, &mut buf).unwrap();
+    // SAFETY:
+    // should be safe since we don't use it after close
+    let borrowed_received_r =
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(received_r) };
+    read(borrowed_received_r, &mut buf).unwrap();
     assert_eq!(&buf[..], b"world");
     close(received_r).unwrap();
-    close(w).unwrap();
 }
 
-// Disable the test on emulated platforms due to not enabled support of AF_ALG in QEMU from rust cross
-#[cfg(any(target_os = "linux", target_os = "android"))]
-#[cfg_attr(qemu, ignore)]
+// 1. Disable the test on emulated platforms due to not enabled support of
+//    AF_ALG in QEMU from rust cross
+// 2. Disable the test on aarch64/Linux CI because bind() fails with ENOENT
+//    https://github.com/nix-rust/nix/issues/1352
+#[cfg(linux_android)]
+#[cfg_attr(
+    any(qemu, all(target_os = "linux", target_arch = "aarch64")),
+    ignore
+)]
 #[test]
 pub fn test_af_alg_cipher() {
     use nix::sys::socket::sockopt::AlgSetKey;
@@ -887,11 +937,6 @@ pub fn test_af_alg_cipher() {
     };
     use nix::unistd::read;
     use std::io::IoSlice;
-
-    skip_if_cirrus!("Fails for an unknown reason Cirrus CI.  Bug #1352");
-    // Travis's seccomp profile blocks AF_ALG
-    // https://docs.docker.com/engine/security/seccomp/
-    skip_if_seccomp!(test_af_alg_cipher);
 
     let alg_type = "skcipher";
     let alg_name = "ctr-aes-aesni";
@@ -913,25 +958,36 @@ pub fn test_af_alg_cipher() {
     .expect("socket failed");
 
     let sockaddr = AlgAddr::new(alg_type, alg_name);
-    bind(sock, &sockaddr).expect("bind failed");
+    bind(sock.as_raw_fd(), &sockaddr).expect("bind failed");
 
     assert_eq!(sockaddr.alg_name().to_string_lossy(), alg_name);
     assert_eq!(sockaddr.alg_type().to_string_lossy(), alg_type);
 
-    setsockopt(sock, AlgSetKey::default(), &key).expect("setsockopt");
-    let session_socket = accept(sock).expect("accept failed");
+    setsockopt(&sock, AlgSetKey::default(), &key).expect("setsockopt");
+    let session_socket = accept(sock.as_raw_fd()).expect("accept failed");
 
     let msgs = [
         ControlMessage::AlgSetOp(&libc::ALG_OP_ENCRYPT),
         ControlMessage::AlgSetIv(iv.as_slice()),
     ];
     let iov = IoSlice::new(&payload);
-    sendmsg::<()>(session_socket, &[iov], &msgs, MsgFlags::empty(), None)
-        .expect("sendmsg encrypt");
+    sendmsg::<()>(
+        session_socket.as_raw_fd(),
+        &[iov],
+        &msgs,
+        MsgFlags::empty(),
+        None,
+    )
+    .expect("sendmsg encrypt");
 
     // allocate buffer for encrypted data
     let mut encrypted = vec![0u8; payload_len];
-    let num_bytes = read(session_socket, &mut encrypted).expect("read encrypt");
+    // SAFETY:
+    // should be safe since session_socket won't be closed before the use of this borrowed one
+    let borrowed_session_socket =
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(session_socket) };
+    let num_bytes =
+        read(borrowed_session_socket, &mut encrypted).expect("read encrypt");
     assert_eq!(num_bytes, payload_len);
 
     let iov = IoSlice::new(&encrypted);
@@ -942,12 +998,23 @@ pub fn test_af_alg_cipher() {
         ControlMessage::AlgSetOp(&libc::ALG_OP_DECRYPT),
         ControlMessage::AlgSetIv(iv.as_slice()),
     ];
-    sendmsg::<()>(session_socket, &[iov], &msgs, MsgFlags::empty(), None)
-        .expect("sendmsg decrypt");
+    sendmsg::<()>(
+        session_socket.as_raw_fd(),
+        &[iov],
+        &msgs,
+        MsgFlags::empty(),
+        None,
+    )
+    .expect("sendmsg decrypt");
 
     // allocate buffer for decrypted data
     let mut decrypted = vec![0u8; payload_len];
-    let num_bytes = read(session_socket, &mut decrypted).expect("read decrypt");
+    // SAFETY:
+    // should be safe since session_socket won't be closed before the use of this borrowed one
+    let borrowed_session_socket =
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(session_socket) };
+    let num_bytes =
+        read(borrowed_session_socket, &mut decrypted).expect("read decrypt");
 
     assert_eq!(num_bytes, payload_len);
     assert_eq!(decrypted, payload);
@@ -955,7 +1022,7 @@ pub fn test_af_alg_cipher() {
 
 // Disable the test on emulated platforms due to not enabled support of AF_ALG
 // in QEMU from rust cross
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(linux_android)]
 #[cfg_attr(qemu, ignore)]
 #[test]
 pub fn test_af_alg_aead() {
@@ -966,7 +1033,7 @@ pub fn test_af_alg_aead() {
         accept, bind, sendmsg, setsockopt, socket, AddressFamily, AlgAddr,
         ControlMessage, MsgFlags, SockFlag, SockType,
     };
-    use nix::unistd::{close, read};
+    use nix::unistd::read;
     use std::io::IoSlice;
 
     skip_if_cirrus!("Fails for an unknown reason Cirrus CI.  Bug #1352");
@@ -1008,12 +1075,13 @@ pub fn test_af_alg_aead() {
     .expect("socket failed");
 
     let sockaddr = AlgAddr::new(alg_type, alg_name);
-    bind(sock, &sockaddr).expect("bind failed");
+    bind(sock.as_raw_fd(), &sockaddr).expect("bind failed");
 
-    setsockopt(sock, AlgSetAeadAuthSize, &auth_size)
+    setsockopt(&sock, AlgSetAeadAuthSize, &auth_size)
         .expect("setsockopt AlgSetAeadAuthSize");
-    setsockopt(sock, AlgSetKey::default(), &key).expect("setsockopt AlgSetKey");
-    let session_socket = accept(sock).expect("accept failed");
+    setsockopt(&sock, AlgSetKey::default(), &key)
+        .expect("setsockopt AlgSetKey");
+    let session_socket = accept(sock.as_raw_fd()).expect("accept failed");
 
     let msgs = [
         ControlMessage::AlgSetOp(&ALG_OP_ENCRYPT),
@@ -1022,15 +1090,25 @@ pub fn test_af_alg_aead() {
     ];
 
     let iov = IoSlice::new(&payload);
-    sendmsg::<()>(session_socket, &[iov], &msgs, MsgFlags::empty(), None)
-        .expect("sendmsg encrypt");
+    sendmsg::<()>(
+        session_socket.as_raw_fd(),
+        &[iov],
+        &msgs,
+        MsgFlags::empty(),
+        None,
+    )
+    .expect("sendmsg encrypt");
 
     // allocate buffer for encrypted data
     let mut encrypted =
         vec![0u8; (assoc_size as usize) + payload_len + auth_size];
-    let num_bytes = read(session_socket, &mut encrypted).expect("read encrypt");
+    // SAFETY:
+    // should be safe since session_socket won't be closed before the use of this borrowed one
+    let borrowed_session_socket =
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(session_socket) };
+    let num_bytes =
+        read(borrowed_session_socket, &mut encrypted).expect("read encrypt");
     assert_eq!(num_bytes, payload_len + auth_size + (assoc_size as usize));
-    close(session_socket).expect("close");
 
     for i in 0..assoc_size {
         encrypted[i as usize] = 10;
@@ -1040,15 +1118,21 @@ pub fn test_af_alg_aead() {
 
     let iv = vec![1u8; iv_len];
 
-    let session_socket = accept(sock).expect("accept failed");
+    let session_socket = accept(sock.as_raw_fd()).expect("accept failed");
 
     let msgs = [
         ControlMessage::AlgSetOp(&ALG_OP_DECRYPT),
         ControlMessage::AlgSetIv(iv.as_slice()),
         ControlMessage::AlgSetAeadAssoclen(&assoc_size),
     ];
-    sendmsg::<()>(session_socket, &[iov], &msgs, MsgFlags::empty(), None)
-        .expect("sendmsg decrypt");
+    sendmsg::<()>(
+        session_socket.as_raw_fd(),
+        &[iov],
+        &msgs,
+        MsgFlags::empty(),
+        None,
+    )
+    .expect("sendmsg decrypt");
 
     // allocate buffer for decrypted data
     let mut decrypted =
@@ -1057,9 +1141,16 @@ pub fn test_af_alg_aead() {
     // authentication tag memory is only needed in the output buffer for encryption
     // and in the input buffer for decryption.
     // Do not block on read, as we may have fewer bytes than buffer size
-    fcntl(session_socket, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
+
+    // SAFETY:
+    //
+    // `session_socket` will be valid for the lifetime of this test
+    // TODO: remove this workaround when accept(2) becomes I/O-safe.
+    let borrowed_fd =
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(session_socket) };
+    fcntl(borrowed_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
         .expect("fcntl non_blocking");
-    let num_bytes = read(session_socket, &mut decrypted).expect("read decrypt");
+    let num_bytes = read(borrowed_fd, &mut decrypted).expect("read decrypt");
 
     assert!(num_bytes >= payload_len + (assoc_size as usize));
     assert_eq!(
@@ -1075,7 +1166,7 @@ pub fn test_af_alg_aead() {
 // This would be a more interesting test if we could assume that the test host
 // has more than one IP address (since we could select a different address to
 // test from).
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "netbsd"))]
+#[cfg(any(target_os = "linux", apple_targets, target_os = "netbsd"))]
 #[test]
 pub fn test_sendmsg_ipv4packetinfo() {
     use cfg_if::cfg_if;
@@ -1095,7 +1186,7 @@ pub fn test_sendmsg_ipv4packetinfo() {
 
     let sock_addr = SockaddrIn::new(127, 0, 0, 1, 4000);
 
-    bind(sock, &sock_addr).expect("bind failed");
+    bind(sock.as_raw_fd(), &sock_addr).expect("bind failed");
 
     let slice = [1u8, 2, 3, 4, 5, 6, 7, 8];
     let iov = [IoSlice::new(&slice)];
@@ -1117,8 +1208,14 @@ pub fn test_sendmsg_ipv4packetinfo() {
 
     let cmsg = [ControlMessage::Ipv4PacketInfo(&pi)];
 
-    sendmsg(sock, &iov, &cmsg, MsgFlags::empty(), Some(&sock_addr))
-        .expect("sendmsg");
+    sendmsg(
+        sock.as_raw_fd(),
+        &iov,
+        &cmsg,
+        MsgFlags::empty(),
+        Some(&sock_addr),
+    )
+    .expect("sendmsg");
 }
 
 // Verify `ControlMessage::Ipv6PacketInfo` for `sendmsg`.
@@ -1131,7 +1228,7 @@ pub fn test_sendmsg_ipv4packetinfo() {
 // test from).
 #[cfg(any(
     target_os = "linux",
-    target_os = "macos",
+    apple_targets,
     target_os = "netbsd",
     target_os = "freebsd"
 ))]
@@ -1155,7 +1252,7 @@ pub fn test_sendmsg_ipv6packetinfo() {
     let std_sa = SocketAddrV6::from_str("[::1]:6000").unwrap();
     let sock_addr: SockaddrIn6 = SockaddrIn6::from(std_sa);
 
-    if let Err(Errno::EADDRNOTAVAIL) = bind(sock, &sock_addr) {
+    if let Err(Errno::EADDRNOTAVAIL) = bind(sock.as_raw_fd(), &sock_addr) {
         println!("IPv6 not available, skipping test.");
         return;
     }
@@ -1171,7 +1268,7 @@ pub fn test_sendmsg_ipv6packetinfo() {
     let cmsg = [ControlMessage::Ipv6PacketInfo(&pi)];
 
     sendmsg::<SockaddrIn6>(
-        sock,
+        sock.as_raw_fd(),
         &iov,
         &cmsg,
         MsgFlags::empty(),
@@ -1188,12 +1285,7 @@ pub fn test_sendmsg_ipv6packetinfo() {
 //
 // Note that binding to 0.0.0.0 is *required* on FreeBSD; sendmsg
 // returns EINVAL otherwise. (See FreeBSD's ip(4) man page.)
-#[cfg(any(
-    target_os = "netbsd",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "dragonfly",
-))]
+#[cfg(any(freebsdlike, netbsdlike))]
 #[test]
 pub fn test_sendmsg_ipv4sendsrcaddr() {
     use nix::sys::socket::{
@@ -1211,8 +1303,8 @@ pub fn test_sendmsg_ipv4sendsrcaddr() {
     .expect("socket failed");
 
     let unspec_sock_addr = SockaddrIn::new(0, 0, 0, 0, 0);
-    bind(sock, &unspec_sock_addr).expect("bind failed");
-    let bound_sock_addr: SockaddrIn = getsockname(sock).unwrap();
+    bind(sock.as_raw_fd(), &unspec_sock_addr).expect("bind failed");
+    let bound_sock_addr: SockaddrIn = getsockname(sock.as_raw_fd()).unwrap();
     let localhost_sock_addr: SockaddrIn =
         SockaddrIn::new(127, 0, 0, 1, bound_sock_addr.port());
 
@@ -1223,7 +1315,7 @@ pub fn test_sendmsg_ipv4sendsrcaddr() {
     )];
 
     sendmsg(
-        sock,
+        sock.as_raw_fd(),
         &iov,
         &cmsg,
         MsgFlags::empty(),
@@ -1237,6 +1329,7 @@ pub fn test_sendmsg_ipv4sendsrcaddr() {
 // 2.12.0.  https://bugs.launchpad.net/qemu/+bug/1701808
 #[cfg_attr(qemu, ignore)]
 #[test]
+#[cfg_attr(target_os = "cygwin", ignore)]
 fn test_scm_rights_single_cmsg_multiple_fds() {
     use nix::sys::socket::{
         recvmsg, sendmsg, ControlMessage, ControlMessageOwned, MsgFlags,
@@ -1263,7 +1356,7 @@ fn test_scm_rights_single_cmsg_multiple_fds() {
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
 
-        let mut cmsgs = msg.cmsgs();
+        let mut cmsgs = msg.cmsgs().unwrap();
         match cmsgs.next() {
             Some(ControlMessageOwned::ScmRights(fds)) => {
                 assert_eq!(
@@ -1300,7 +1393,6 @@ pub fn test_sendmsg_empty_cmsgs() {
         recvmsg, sendmsg, socketpair, AddressFamily, MsgFlags, SockFlag,
         SockType,
     };
-    use nix::unistd::close;
     use std::io::{IoSlice, IoSliceMut};
 
     let (fd1, fd2) = socketpair(
@@ -1314,10 +1406,10 @@ pub fn test_sendmsg_empty_cmsgs() {
     {
         let iov = [IoSlice::new(b"hello")];
         assert_eq!(
-            sendmsg::<()>(fd1, &iov, &[], MsgFlags::empty(), None).unwrap(),
+            sendmsg::<()>(fd1.as_raw_fd(), &iov, &[], MsgFlags::empty(), None)
+                .unwrap(),
             5
         );
-        close(fd1).unwrap();
     }
 
     {
@@ -1326,39 +1418,33 @@ pub fn test_sendmsg_empty_cmsgs() {
 
         let mut cmsgspace = cmsg_space!([RawFd; 1]);
         let msg = recvmsg::<()>(
-            fd2,
+            fd2.as_raw_fd(),
             &mut iov,
             Some(&mut cmsgspace),
             MsgFlags::empty(),
         )
         .unwrap();
 
-        for _ in msg.cmsgs() {
+        if msg.cmsgs().unwrap().next().is_some() {
             panic!("unexpected cmsg");
         }
         assert!(!msg
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
         assert_eq!(msg.bytes, 5);
-        close(fd2).unwrap();
     }
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "dragonfly",
-))]
+#[cfg(any(linux_android, freebsdlike))]
 #[test]
 fn test_scm_credentials() {
     use nix::sys::socket::{
         recvmsg, sendmsg, socketpair, AddressFamily, ControlMessage,
         ControlMessageOwned, MsgFlags, SockFlag, SockType, UnixCredentials,
     };
-    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[cfg(linux_android)]
     use nix::sys::socket::{setsockopt, sockopt::PassCred};
-    use nix::unistd::{close, getgid, getpid, getuid};
+    use nix::unistd::{getgid, getpid, getuid};
     use std::io::{IoSlice, IoSliceMut};
 
     let (send, recv) = socketpair(
@@ -1368,23 +1454,28 @@ fn test_scm_credentials() {
         SockFlag::empty(),
     )
     .unwrap();
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    setsockopt(recv, PassCred, &true).unwrap();
+    #[cfg(linux_android)]
+    setsockopt(&recv, PassCred, &true).unwrap();
 
     {
         let iov = [IoSlice::new(b"hello")];
-        #[cfg(any(target_os = "android", target_os = "linux"))]
+        #[cfg(linux_android)]
         let cred = UnixCredentials::new();
-        #[cfg(any(target_os = "android", target_os = "linux"))]
+        #[cfg(linux_android)]
         let cmsg = ControlMessage::ScmCredentials(&cred);
-        #[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
+        #[cfg(freebsdlike)]
         let cmsg = ControlMessage::ScmCreds;
         assert_eq!(
-            sendmsg::<()>(send, &iov, &[cmsg], MsgFlags::empty(), None)
-                .unwrap(),
+            sendmsg::<()>(
+                send.as_raw_fd(),
+                &iov,
+                &[cmsg],
+                MsgFlags::empty(),
+                None
+            )
+            .unwrap(),
             5
         );
-        close(send).unwrap();
     }
 
     {
@@ -1393,7 +1484,7 @@ fn test_scm_credentials() {
 
         let mut cmsgspace = cmsg_space!(UnixCredentials);
         let msg = recvmsg::<()>(
-            recv,
+            recv.as_raw_fd(),
             &mut iov,
             Some(&mut cmsgspace),
             MsgFlags::empty(),
@@ -1401,13 +1492,13 @@ fn test_scm_credentials() {
         .unwrap();
         let mut received_cred = None;
 
-        for cmsg in msg.cmsgs() {
+        for cmsg in msg.cmsgs().unwrap() {
             let cred = match cmsg {
-                #[cfg(any(target_os = "android", target_os = "linux"))]
+                #[cfg(linux_android)]
                 ControlMessageOwned::ScmCredentials(cred) => cred,
-                #[cfg(any(target_os = "freebsd", target_os = "dragonfly"))]
+                #[cfg(freebsdlike)]
                 ControlMessageOwned::ScmCreds(cred) => cred,
-                other => panic!("unexpected cmsg {:?}", other),
+                other => panic!("unexpected cmsg {other:?}"),
             };
             assert!(received_cred.is_none());
             assert_eq!(cred.pid(), getpid().as_raw());
@@ -1420,36 +1511,47 @@ fn test_scm_credentials() {
         assert!(!msg
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
-        close(recv).unwrap();
     }
 }
 
 /// Ensure that we can send `SCM_CREDENTIALS` and `SCM_RIGHTS` with a single
 /// `sendmsg` call.
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 // qemu's handling of multiple cmsgs is bugged, ignore tests under emulation
 // see https://bugs.launchpad.net/qemu/+bug/1781280
 #[cfg_attr(qemu, ignore)]
 #[test]
 fn test_scm_credentials_and_rights() {
     let space = cmsg_space!(libc::ucred, RawFd);
-    test_impl_scm_credentials_and_rights(space);
+    test_impl_scm_credentials_and_rights(space).unwrap();
 }
 
 /// Ensure that passing a an oversized control message buffer to recvmsg
 /// still works.
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 // qemu's handling of multiple cmsgs is bugged, ignore tests under emulation
 // see https://bugs.launchpad.net/qemu/+bug/1781280
 #[cfg_attr(qemu, ignore)]
 #[test]
 fn test_too_large_cmsgspace() {
     let space = vec![0u8; 1024];
-    test_impl_scm_credentials_and_rights(space);
+    test_impl_scm_credentials_and_rights(space).unwrap();
 }
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
-fn test_impl_scm_credentials_and_rights(mut space: Vec<u8>) {
+#[cfg(linux_android)]
+#[test]
+fn test_too_small_cmsgspace() {
+    let space = vec![0u8; 4];
+    assert_eq!(
+        test_impl_scm_credentials_and_rights(space),
+        Err(nix::errno::Errno::ENOBUFS)
+    );
+}
+
+#[cfg(linux_android)]
+fn test_impl_scm_credentials_and_rights(
+    mut space: Vec<u8>,
+) -> Result<(), nix::errno::Errno> {
     use libc::ucred;
     use nix::sys::socket::sockopt::PassCred;
     use nix::sys::socket::{
@@ -1466,7 +1568,7 @@ fn test_impl_scm_credentials_and_rights(mut space: Vec<u8>) {
         SockFlag::empty(),
     )
     .unwrap();
-    setsockopt(recv, PassCred, &true).unwrap();
+    setsockopt(&recv, PassCred, &true).unwrap();
 
     let (r, w) = pipe().unwrap();
     let mut received_r: Option<RawFd> = None;
@@ -1479,30 +1581,39 @@ fn test_impl_scm_credentials_and_rights(mut space: Vec<u8>) {
             gid: getgid().as_raw(),
         }
         .into();
-        let fds = [r];
+        let fds = [r.as_raw_fd()];
         let cmsgs = [
             ControlMessage::ScmCredentials(&cred),
             ControlMessage::ScmRights(&fds),
         ];
         assert_eq!(
-            sendmsg::<()>(send, &iov, &cmsgs, MsgFlags::empty(), None).unwrap(),
+            sendmsg::<()>(
+                send.as_raw_fd(),
+                &iov,
+                &cmsgs,
+                MsgFlags::empty(),
+                None
+            )
+            .unwrap(),
             5
         );
-        close(r).unwrap();
-        close(send).unwrap();
     }
 
     {
         let mut buf = [0u8; 5];
         let mut iov = [IoSliceMut::new(&mut buf[..])];
-        let msg =
-            recvmsg::<()>(recv, &mut iov, Some(&mut space), MsgFlags::empty())
-                .unwrap();
+        let msg = recvmsg::<()>(
+            recv.as_raw_fd(),
+            &mut iov,
+            Some(&mut space),
+            MsgFlags::empty(),
+        )
+        .unwrap();
         let mut received_cred = None;
 
-        assert_eq!(msg.cmsgs().count(), 2, "expected 2 cmsgs");
+        assert_eq!(msg.cmsgs()?.count(), 2, "expected 2 cmsgs");
 
-        for cmsg in msg.cmsgs() {
+        for cmsg in msg.cmsgs()? {
             match cmsg {
                 ControlMessageOwned::ScmRights(fds) => {
                     assert_eq!(received_r, None, "already received fd");
@@ -1524,25 +1635,31 @@ fn test_impl_scm_credentials_and_rights(mut space: Vec<u8>) {
         assert!(!msg
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
-        close(recv).unwrap();
     }
 
     let received_r = received_r.expect("Did not receive passed fd");
     // Ensure that the received file descriptor works
-    write(w, b"world").unwrap();
+    write(&w, b"world").unwrap();
     let mut buf = [0u8; 5];
-    read(received_r, &mut buf).unwrap();
+    // SAFETY:
+    // It should be safe if we don't use this BorrowedFd after close.
+    let received_r_borrowed =
+        unsafe { std::os::fd::BorrowedFd::borrow_raw(received_r) };
+    read(received_r_borrowed, &mut buf).unwrap();
     assert_eq!(&buf[..], b"world");
     close(received_r).unwrap();
-    close(w).unwrap();
+
+    Ok(())
 }
 
 // Test creating and using named unix domain sockets
 #[test]
 pub fn test_named_unixdomain() {
-    use nix::sys::socket::{accept, bind, connect, listen, socket, UnixAddr};
+    use nix::sys::socket::{
+        accept, bind, connect, listen, socket, Backlog, UnixAddr,
+    };
     use nix::sys::socket::{SockFlag, SockType};
-    use nix::unistd::{close, read, write};
+    use nix::unistd::{read, write};
     use std::thread;
 
     let tempdir = tempfile::tempdir().unwrap();
@@ -1555,8 +1672,8 @@ pub fn test_named_unixdomain() {
     )
     .expect("socket failed");
     let sockaddr = UnixAddr::new(&sockname).unwrap();
-    bind(s1, &sockaddr).expect("bind failed");
-    listen(s1, 10).expect("listen failed");
+    bind(s1.as_raw_fd(), &sockaddr).expect("bind failed");
+    listen(&s1, Backlog::new(10).unwrap()).expect("listen failed");
 
     let thr = thread::spawn(move || {
         let s2 = socket(
@@ -1566,31 +1683,46 @@ pub fn test_named_unixdomain() {
             None,
         )
         .expect("socket failed");
-        connect(s2, &sockaddr).expect("connect failed");
-        write(s2, b"hello").expect("write failed");
-        close(s2).unwrap();
+        connect(s2.as_raw_fd(), &sockaddr).expect("connect failed");
+        write(&s2, b"hello").expect("write failed");
     });
 
-    let s3 = accept(s1).expect("accept failed");
+    let s3 = accept(s1.as_raw_fd()).expect("accept failed");
 
+    // SAFETY:
+    // It should be safe considering that s3 will be open within this test
+    let s3 = unsafe { std::os::fd::BorrowedFd::borrow_raw(s3) };
     let mut buf = [0; 5];
     read(s3, &mut buf).unwrap();
-    close(s3).unwrap();
-    close(s1).unwrap();
     thr.join().unwrap();
 
     assert_eq!(&buf[..], b"hello");
 }
 
+#[test]
+pub fn test_listen_maxbacklog() {
+    use nix::sys::socket::Backlog;
+
+    assert!(Backlog::new(libc::SOMAXCONN).is_ok());
+}
+
+#[test]
+pub fn test_listen_wrongbacklog() {
+    use nix::sys::socket::Backlog;
+
+    #[cfg(not(target_os = "cygwin"))]
+    assert!(Backlog::new(libc::SOMAXCONN + 1).is_err());
+    assert!(Backlog::new(-2).is_err());
+}
+
 // Test using unnamed unix domain addresses
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 #[test]
 pub fn test_unnamed_unixdomain() {
     use nix::sys::socket::{getsockname, socketpair};
     use nix::sys::socket::{SockFlag, SockType};
-    use nix::unistd::close;
 
-    let (fd_1, fd_2) = socketpair(
+    let (fd_1, _fd_2) = socketpair(
         AddressFamily::Unix,
         SockType::Stream,
         None,
@@ -1598,20 +1730,17 @@ pub fn test_unnamed_unixdomain() {
     )
     .expect("socketpair failed");
 
-    let addr_1: UnixAddr = getsockname(fd_1).expect("getsockname failed");
+    let addr_1: UnixAddr =
+        getsockname(fd_1.as_raw_fd()).expect("getsockname failed");
     assert!(addr_1.is_unnamed());
-
-    close(fd_1).unwrap();
-    close(fd_2).unwrap();
 }
 
 // Test creating and using unnamed unix domain addresses for autobinding sockets
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 #[test]
 pub fn test_unnamed_unixdomain_autobind() {
     use nix::sys::socket::{bind, getsockname, socket};
     use nix::sys::socket::{SockFlag, SockType};
-    use nix::unistd::close;
 
     let fd = socket(
         AddressFamily::Unix,
@@ -1623,20 +1752,19 @@ pub fn test_unnamed_unixdomain_autobind() {
 
     // unix(7): "If a bind(2) call specifies addrlen as `sizeof(sa_family_t)`, or [...], then the
     // socket is autobound to an abstract address"
-    bind(fd, &UnixAddr::new_unnamed()).expect("bind failed");
+    bind(fd.as_raw_fd(), &UnixAddr::new_unnamed()).expect("bind failed");
 
-    let addr: UnixAddr = getsockname(fd).expect("getsockname failed");
+    let addr: UnixAddr =
+        getsockname(fd.as_raw_fd()).expect("getsockname failed");
     let addr = addr.as_abstract().unwrap();
 
     // changed from 8 to 5 bytes in Linux 2.3.15, and rust's minimum supported Linux version is 3.2
     // (as of 2022-11)
     assert_eq!(addr.len(), 5);
-
-    close(fd).unwrap();
 }
 
 // Test creating and using named system control sockets
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(apple_targets)]
 #[test]
 pub fn test_syscontrol() {
     use nix::errno::Errno;
@@ -1651,26 +1779,18 @@ pub fn test_syscontrol() {
         SockProtocol::KextControl,
     )
     .expect("socket failed");
-    SysControlAddr::from_name(fd, "com.apple.net.utun_control", 0)
+    SysControlAddr::from_name(fd.as_raw_fd(), "com.apple.net.utun_control", 0)
         .expect("resolving sys_control name failed");
     assert_eq!(
-        SysControlAddr::from_name(fd, "foo.bar.lol", 0).err(),
+        SysControlAddr::from_name(fd.as_raw_fd(), "foo.bar.lol", 0).err(),
         Some(Errno::ENOENT)
     );
 
     // requires root privileges
-    // connect(fd, &sockaddr).expect("connect failed");
+    // connect(fd.as_raw_fd(), &sockaddr).expect("connect failed");
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "netbsd",
-    target_os = "openbsd",
-))]
+#[cfg(any(bsd, linux_android))]
 fn loopback_address(
     family: AddressFamily,
 ) -> Option<nix::ifaddrs::InterfaceAddress> {
@@ -1685,7 +1805,7 @@ fn loopback_address(
         Err(e) => {
             let stdioerr = io::stderr();
             let mut handle = stdioerr.lock();
-            writeln!(handle, "getifaddrs: {:?}", e).unwrap();
+            writeln!(handle, "getifaddrs: {e:?}").unwrap();
             return None;
         }
     };
@@ -1697,20 +1817,16 @@ fn loopback_address(
     })
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "ios",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "netbsd",
-))]
+#[cfg(any(linux_android, apple_targets, target_os = "netbsd"))]
 // qemu doesn't seem to be emulating this correctly in these architectures
 #[cfg_attr(
     all(
         qemu,
         any(
             target_arch = "mips",
+            target_arch = "mips32r6",
             target_arch = "mips64",
+            target_arch = "mips64r6",
             target_arch = "powerpc64",
         )
     ),
@@ -1740,9 +1856,10 @@ pub fn test_recv_ipv4pktinfo() {
         None,
     )
     .expect("receive socket failed");
-    bind(receive, &lo).expect("bind failed");
-    let sa: SockaddrIn = getsockname(receive).expect("getsockname failed");
-    setsockopt(receive, Ipv4PacketInfo, &true).expect("setsockopt failed");
+    bind(receive.as_raw_fd(), &lo).expect("bind failed");
+    let sa: SockaddrIn =
+        getsockname(receive.as_raw_fd()).expect("getsockname failed");
+    setsockopt(&receive, Ipv4PacketInfo, &true).expect("setsockopt failed");
 
     {
         let slice = [1u8, 2, 3, 4, 5, 6, 7, 8];
@@ -1755,7 +1872,7 @@ pub fn test_recv_ipv4pktinfo() {
             None,
         )
         .expect("send socket failed");
-        sendmsg(send, &iov, &[], MsgFlags::empty(), Some(&sa))
+        sendmsg(send.as_raw_fd(), &iov, &[], MsgFlags::empty(), Some(&sa))
             .expect("sendmsg failed");
     }
 
@@ -1765,7 +1882,7 @@ pub fn test_recv_ipv4pktinfo() {
 
         let mut space = cmsg_space!(libc::in_pktinfo);
         let msg = recvmsg::<()>(
-            receive,
+            receive.as_raw_fd(),
             &mut iovec,
             Some(&mut space),
             MsgFlags::empty(),
@@ -1775,7 +1892,7 @@ pub fn test_recv_ipv4pktinfo() {
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
 
-        let mut cmsgs = msg.cmsgs();
+        let mut cmsgs = msg.cmsgs().unwrap();
         if let Some(ControlMessageOwned::Ipv4PacketInfo(pktinfo)) = cmsgs.next()
         {
             let i = if_nametoindex(lo_name.as_bytes()).expect("if_nametoindex");
@@ -1791,20 +1908,16 @@ pub fn test_recv_ipv4pktinfo() {
     }
 }
 
-#[cfg(any(
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "macos",
-    target_os = "netbsd",
-    target_os = "openbsd",
-))]
+#[cfg(bsd)]
 // qemu doesn't seem to be emulating this correctly in these architectures
 #[cfg_attr(
     all(
         qemu,
         any(
             target_arch = "mips",
+            target_arch = "mips32r6",
             target_arch = "mips64",
+            target_arch = "mips64r6",
             target_arch = "powerpc64",
         )
     ),
@@ -1834,11 +1947,12 @@ pub fn test_recvif() {
         None,
     )
     .expect("receive socket failed");
-    bind(receive, &lo).expect("bind failed");
-    let sa: SockaddrIn = getsockname(receive).expect("getsockname failed");
-    setsockopt(receive, Ipv4RecvIf, &true)
+    bind(receive.as_raw_fd(), &lo).expect("bind failed");
+    let sa: SockaddrIn =
+        getsockname(receive.as_raw_fd()).expect("getsockname failed");
+    setsockopt(&receive, Ipv4RecvIf, &true)
         .expect("setsockopt IP_RECVIF failed");
-    setsockopt(receive, Ipv4RecvDstAddr, &true)
+    setsockopt(&receive, Ipv4RecvDstAddr, &true)
         .expect("setsockopt IP_RECVDSTADDR failed");
 
     {
@@ -1852,7 +1966,7 @@ pub fn test_recvif() {
             None,
         )
         .expect("send socket failed");
-        sendmsg(send, &iov, &[], MsgFlags::empty(), Some(&sa))
+        sendmsg(send.as_raw_fd(), &iov, &[], MsgFlags::empty(), Some(&sa))
             .expect("sendmsg failed");
     }
 
@@ -1861,7 +1975,7 @@ pub fn test_recvif() {
         let mut iovec = [IoSliceMut::new(&mut buf)];
         let mut space = cmsg_space!(libc::sockaddr_dl, libc::in_addr);
         let msg = recvmsg::<()>(
-            receive,
+            receive.as_raw_fd(),
             &mut iovec,
             Some(&mut space),
             MsgFlags::empty(),
@@ -1870,11 +1984,11 @@ pub fn test_recvif() {
         assert!(!msg
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
-        assert_eq!(msg.cmsgs().count(), 2, "expected 2 cmsgs");
+        assert_eq!(msg.cmsgs().unwrap().count(), 2, "expected 2 cmsgs");
 
         let mut rx_recvif = false;
         let mut rx_recvdstaddr = false;
-        for cmsg in msg.cmsgs() {
+        for cmsg in msg.cmsgs().unwrap() {
             match cmsg {
                 ControlMessageOwned::Ipv4RecvIf(dl) => {
                     rx_recvif = true;
@@ -1908,7 +2022,7 @@ pub fn test_recvif() {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux"))]
+#[cfg(any(linux_android, target_os = "freebsd"))]
 #[cfg_attr(qemu, ignore)]
 #[test]
 pub fn test_recvif_ipv4() {
@@ -1933,9 +2047,10 @@ pub fn test_recvif_ipv4() {
         None,
     )
     .expect("receive socket failed");
-    bind(receive, &lo).expect("bind failed");
-    let sa: SockaddrIn = getsockname(receive).expect("getsockname failed");
-    setsockopt(receive, Ipv4OrigDstAddr, &true)
+    bind(receive.as_raw_fd(), &lo).expect("bind failed");
+    let sa: SockaddrIn =
+        getsockname(receive.as_raw_fd()).expect("getsockname failed");
+    setsockopt(&receive, Ipv4OrigDstAddr, &true)
         .expect("setsockopt IP_ORIGDSTADDR failed");
 
     {
@@ -1949,7 +2064,7 @@ pub fn test_recvif_ipv4() {
             None,
         )
         .expect("send socket failed");
-        sendmsg(send, &iov, &[], MsgFlags::empty(), Some(&sa))
+        sendmsg(send.as_raw_fd(), &iov, &[], MsgFlags::empty(), Some(&sa))
             .expect("sendmsg failed");
     }
 
@@ -1958,7 +2073,7 @@ pub fn test_recvif_ipv4() {
         let mut iovec = [IoSliceMut::new(&mut buf)];
         let mut space = cmsg_space!(libc::sockaddr_in);
         let msg = recvmsg::<()>(
-            receive,
+            receive.as_raw_fd(),
             &mut iovec,
             Some(&mut space),
             MsgFlags::empty(),
@@ -1967,10 +2082,10 @@ pub fn test_recvif_ipv4() {
         assert!(!msg
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
-        assert_eq!(msg.cmsgs().count(), 1, "expected 1 cmsgs");
+        assert_eq!(msg.cmsgs().unwrap().count(), 1, "expected 1 cmsgs");
 
         let mut rx_recvorigdstaddr = false;
-        for cmsg in msg.cmsgs() {
+        for cmsg in msg.cmsgs().unwrap() {
             match cmsg {
                 ControlMessageOwned::Ipv4OrigDstAddr(addr) => {
                     rx_recvorigdstaddr = true;
@@ -1993,7 +2108,7 @@ pub fn test_recvif_ipv4() {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "freebsd", target_os = "linux"))]
+#[cfg(any(linux_android, target_os = "freebsd"))]
 #[cfg_attr(qemu, ignore)]
 #[test]
 pub fn test_recvif_ipv6() {
@@ -2018,9 +2133,10 @@ pub fn test_recvif_ipv6() {
         None,
     )
     .expect("receive socket failed");
-    bind(receive, &lo).expect("bind failed");
-    let sa: SockaddrIn6 = getsockname(receive).expect("getsockname failed");
-    setsockopt(receive, Ipv6OrigDstAddr, &true)
+    bind(receive.as_raw_fd(), &lo).expect("bind failed");
+    let sa: SockaddrIn6 =
+        getsockname(receive.as_raw_fd()).expect("getsockname failed");
+    setsockopt(&receive, Ipv6OrigDstAddr, &true)
         .expect("setsockopt IP_ORIGDSTADDR failed");
 
     {
@@ -2034,7 +2150,7 @@ pub fn test_recvif_ipv6() {
             None,
         )
         .expect("send socket failed");
-        sendmsg(send, &iov, &[], MsgFlags::empty(), Some(&sa))
+        sendmsg(send.as_raw_fd(), &iov, &[], MsgFlags::empty(), Some(&sa))
             .expect("sendmsg failed");
     }
 
@@ -2043,7 +2159,7 @@ pub fn test_recvif_ipv6() {
         let mut iovec = [IoSliceMut::new(&mut buf)];
         let mut space = cmsg_space!(libc::sockaddr_in6);
         let msg = recvmsg::<()>(
-            receive,
+            receive.as_raw_fd(),
             &mut iovec,
             Some(&mut space),
             MsgFlags::empty(),
@@ -2052,10 +2168,10 @@ pub fn test_recvif_ipv6() {
         assert!(!msg
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
-        assert_eq!(msg.cmsgs().count(), 1, "expected 1 cmsgs");
+        assert_eq!(msg.cmsgs().unwrap().count(), 1, "expected 1 cmsgs");
 
         let mut rx_recvorigdstaddr = false;
-        for cmsg in msg.cmsgs() {
+        for cmsg in msg.cmsgs().unwrap() {
             match cmsg {
                 ControlMessageOwned::Ipv6OrigDstAddr(addr) => {
                     rx_recvorigdstaddr = true;
@@ -2078,22 +2194,16 @@ pub fn test_recvif_ipv6() {
     }
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "netbsd",
-    target_os = "openbsd",
-))]
+#[cfg(any(linux_android, target_os = "freebsd", apple_targets, netbsdlike))]
 // qemu doesn't seem to be emulating this correctly in these architectures
 #[cfg_attr(
     all(
         qemu,
         any(
             target_arch = "mips",
+            target_arch = "mips32r6",
             target_arch = "mips64",
+            target_arch = "mips64r6",
             target_arch = "powerpc64",
         )
     ),
@@ -2123,9 +2233,10 @@ pub fn test_recv_ipv6pktinfo() {
         None,
     )
     .expect("receive socket failed");
-    bind(receive, &lo).expect("bind failed");
-    let sa: SockaddrIn6 = getsockname(receive).expect("getsockname failed");
-    setsockopt(receive, Ipv6RecvPacketInfo, &true).expect("setsockopt failed");
+    bind(receive.as_raw_fd(), &lo).expect("bind failed");
+    let sa: SockaddrIn6 =
+        getsockname(receive.as_raw_fd()).expect("getsockname failed");
+    setsockopt(&receive, Ipv6RecvPacketInfo, &true).expect("setsockopt failed");
 
     {
         let slice = [1u8, 2, 3, 4, 5, 6, 7, 8];
@@ -2138,7 +2249,7 @@ pub fn test_recv_ipv6pktinfo() {
             None,
         )
         .expect("send socket failed");
-        sendmsg(send, &iov, &[], MsgFlags::empty(), Some(&sa))
+        sendmsg(send.as_raw_fd(), &iov, &[], MsgFlags::empty(), Some(&sa))
             .expect("sendmsg failed");
     }
 
@@ -2148,7 +2259,7 @@ pub fn test_recv_ipv6pktinfo() {
 
         let mut space = cmsg_space!(libc::in6_pktinfo);
         let msg = recvmsg::<()>(
-            receive,
+            receive.as_raw_fd(),
             &mut iovec,
             Some(&mut space),
             MsgFlags::empty(),
@@ -2158,7 +2269,7 @@ pub fn test_recv_ipv6pktinfo() {
             .flags
             .intersects(MsgFlags::MSG_TRUNC | MsgFlags::MSG_CTRUNC));
 
-        let mut cmsgs = msg.cmsgs();
+        let mut cmsgs = msg.cmsgs().unwrap();
         if let Some(ControlMessageOwned::Ipv6PacketInfo(pktinfo)) = cmsgs.next()
         {
             let i = if_nametoindex(lo_name.as_bytes()).expect("if_nametoindex");
@@ -2174,12 +2285,11 @@ pub fn test_recv_ipv6pktinfo() {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[cfg(linux_android)]
 #[test]
 pub fn test_vsock() {
     use nix::sys::socket::SockaddrLike;
     use nix::sys::socket::{AddressFamily, VsockAddr};
-    use std::convert::TryInto;
     use std::mem;
 
     let port: u32 = 3000;
@@ -2215,6 +2325,49 @@ pub fn test_vsock() {
     assert_eq!(addr3.as_ref().svm_port, addr1.port());
 }
 
+#[cfg(apple_targets)]
+#[test]
+pub fn test_vsock() {
+    use nix::sys::socket::SockaddrLike;
+    use nix::sys::socket::{AddressFamily, VsockAddr};
+    use std::mem;
+
+    let port: u32 = 3000;
+
+    // macOS doesn't have a VMADDR_CID_LOCAL, so test with host again
+    let addr_host = VsockAddr::new(libc::VMADDR_CID_HOST, port);
+    assert_eq!(addr_host.cid(), libc::VMADDR_CID_HOST);
+    assert_eq!(addr_host.port(), port);
+
+    let addr_any = VsockAddr::new(libc::VMADDR_CID_ANY, libc::VMADDR_PORT_ANY);
+    assert_eq!(addr_any.cid(), libc::VMADDR_CID_ANY);
+    assert_eq!(addr_any.port(), libc::VMADDR_PORT_ANY);
+
+    assert_ne!(addr_host, addr_any);
+    assert_ne!(calculate_hash(&addr_host), calculate_hash(&addr_any));
+
+    let addr1 = VsockAddr::new(libc::VMADDR_CID_HOST, port);
+    let addr2 = VsockAddr::new(libc::VMADDR_CID_HOST, port);
+    assert_eq!(addr1, addr2);
+    assert_eq!(calculate_hash(&addr1), calculate_hash(&addr2));
+
+    let addr3 = unsafe {
+        VsockAddr::from_raw(
+            addr2.as_ref() as *const libc::sockaddr_vm as *const libc::sockaddr,
+            Some(mem::size_of::<libc::sockaddr_vm>().try_into().unwrap()),
+        )
+    }
+    .unwrap();
+    assert_eq!(
+        addr3.as_ref().svm_family,
+        AddressFamily::Vsock as libc::sa_family_t
+    );
+    let cid = addr3.as_ref().svm_cid;
+    let port = addr3.as_ref().svm_port;
+    assert_eq!(cid, addr1.cid());
+    assert_eq!(port, addr1.port());
+}
+
 // Disable the test on emulated platforms because it fails in Cirrus-CI.  Lack
 // of QEMU support is suspected.
 #[cfg_attr(qemu, ignore)]
@@ -2235,25 +2388,31 @@ fn test_recvmsg_timestampns() {
         None,
     )
     .unwrap();
-    setsockopt(in_socket, sockopt::ReceiveTimestampns, &true).unwrap();
+    setsockopt(&in_socket, sockopt::ReceiveTimestampns, &true).unwrap();
     let localhost = SockaddrIn::new(127, 0, 0, 1, 0);
-    bind(in_socket, &localhost).unwrap();
-    let address: SockaddrIn = getsockname(in_socket).unwrap();
+    bind(in_socket.as_raw_fd(), &localhost).unwrap();
+    let address: SockaddrIn = getsockname(in_socket.as_raw_fd()).unwrap();
     // Get initial time
     let time0 = SystemTime::now();
     // Send the message
     let iov = [IoSlice::new(message)];
     let flags = MsgFlags::empty();
-    let l = sendmsg(in_socket, &iov, &[], flags, Some(&address)).unwrap();
+    let l = sendmsg(in_socket.as_raw_fd(), &iov, &[], flags, Some(&address))
+        .unwrap();
     assert_eq!(message.len(), l);
     // Receive the message
     let mut buffer = vec![0u8; message.len()];
     let mut cmsgspace = nix::cmsg_space!(TimeSpec);
 
     let mut iov = [IoSliceMut::new(&mut buffer)];
-    let r = recvmsg::<()>(in_socket, &mut iov, Some(&mut cmsgspace), flags)
-        .unwrap();
-    let rtime = match r.cmsgs().next() {
+    let r = recvmsg::<()>(
+        in_socket.as_raw_fd(),
+        &mut iov,
+        Some(&mut cmsgspace),
+        flags,
+    )
+    .unwrap();
+    let rtime = match r.cmsgs().unwrap().next() {
         Some(ControlMessageOwned::ScmTimestampns(rtime)) => rtime,
         Some(_) => panic!("Unexpected control message"),
         None => panic!("No control message"),
@@ -2266,8 +2425,6 @@ fn test_recvmsg_timestampns() {
         Duration::new(rtime.tv_sec() as u64, rtime.tv_nsec() as u32);
     assert!(time0.duration_since(UNIX_EPOCH).unwrap() <= rduration);
     assert!(rduration <= time1.duration_since(UNIX_EPOCH).unwrap());
-    // Close socket
-    nix::unistd::close(in_socket).unwrap();
 }
 
 // Disable the test on emulated platforms because it fails in Cirrus-CI.  Lack
@@ -2290,27 +2447,33 @@ fn test_recvmmsg_timestampns() {
         None,
     )
     .unwrap();
-    setsockopt(in_socket, sockopt::ReceiveTimestampns, &true).unwrap();
+    setsockopt(&in_socket, sockopt::ReceiveTimestampns, &true).unwrap();
     let localhost = SockaddrIn::from_str("127.0.0.1:0").unwrap();
-    bind(in_socket, &localhost).unwrap();
-    let address: SockaddrIn = getsockname(in_socket).unwrap();
+    bind(in_socket.as_raw_fd(), &localhost).unwrap();
+    let address: SockaddrIn = getsockname(in_socket.as_raw_fd()).unwrap();
     // Get initial time
     let time0 = SystemTime::now();
     // Send the message
     let iov = [IoSlice::new(message)];
     let flags = MsgFlags::empty();
-    let l = sendmsg(in_socket, &iov, &[], flags, Some(&address)).unwrap();
+    let l = sendmsg(in_socket.as_raw_fd(), &iov, &[], flags, Some(&address))
+        .unwrap();
     assert_eq!(message.len(), l);
     // Receive the message
     let mut buffer = vec![0u8; message.len()];
     let cmsgspace = nix::cmsg_space!(TimeSpec);
-    let iov = vec![[IoSliceMut::new(&mut buffer)]];
+    let mut iov = [[IoSliceMut::new(&mut buffer)]];
     let mut data = MultiHeaders::preallocate(1, Some(cmsgspace));
-    let r: Vec<RecvMsg<()>> =
-        recvmmsg(in_socket, &mut data, iov.iter(), flags, None)
-            .unwrap()
-            .collect();
-    let rtime = match r[0].cmsgs().next() {
+    let r: Vec<RecvMsg<()>> = recvmmsg(
+        in_socket.as_raw_fd(),
+        &mut data,
+        iov.iter_mut(),
+        flags,
+        None,
+    )
+    .unwrap()
+    .collect();
+    let rtime = match r[0].cmsgs().unwrap().next() {
         Some(ControlMessageOwned::ScmTimestampns(rtime)) => rtime,
         Some(_) => panic!("Unexpected control message"),
         None => panic!("No control message"),
@@ -2323,14 +2486,12 @@ fn test_recvmmsg_timestampns() {
         Duration::new(rtime.tv_sec() as u64, rtime.tv_nsec() as u32);
     assert!(time0.duration_since(UNIX_EPOCH).unwrap() <= rduration);
     assert!(rduration <= time1.duration_since(UNIX_EPOCH).unwrap());
-    // Close socket
-    nix::unistd::close(in_socket).unwrap();
 }
 
 // Disable the test on emulated platforms because it fails in Cirrus-CI.  Lack
 // of QEMU support is suspected.
 #[cfg_attr(qemu, ignore)]
-#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[cfg(any(linux_android, target_os = "fuchsia"))]
 #[test]
 fn test_recvmsg_rxq_ovfl() {
     use nix::sys::socket::sockopt::{RcvBuf, RxqOvfl};
@@ -2357,16 +2518,16 @@ fn test_recvmsg_rxq_ovfl() {
     .unwrap();
 
     let localhost = SockaddrIn::from_str("127.0.0.1:0").unwrap();
-    bind(in_socket, &localhost).unwrap();
+    bind(in_socket.as_raw_fd(), &localhost).unwrap();
 
-    let address: SockaddrIn = getsockname(in_socket).unwrap();
-    connect(out_socket, &address).unwrap();
+    let address: SockaddrIn = getsockname(in_socket.as_raw_fd()).unwrap();
+    connect(out_socket.as_raw_fd(), &address).unwrap();
 
     // Set SO_RXQ_OVFL flag.
-    setsockopt(in_socket, RxqOvfl, &1).unwrap();
+    setsockopt(&in_socket, RxqOvfl, &1).unwrap();
 
     // Set the receiver buffer size to hold only 2 messages.
-    setsockopt(in_socket, RcvBuf, &bufsize).unwrap();
+    setsockopt(&in_socket, RcvBuf, &bufsize).unwrap();
 
     let mut drop_counter = 0;
 
@@ -2377,8 +2538,14 @@ fn test_recvmsg_rxq_ovfl() {
         // Send the 3 messages (the receiver buffer can only hold 2 messages)
         // to create an overflow.
         for _ in 0..3 {
-            let l =
-                sendmsg(out_socket, &iov, &[], flags, Some(&address)).unwrap();
+            let l = sendmsg(
+                out_socket.as_raw_fd(),
+                &iov,
+                &[],
+                flags,
+                Some(&address),
+            )
+            .unwrap();
             assert_eq!(message.len(), l);
         }
 
@@ -2390,13 +2557,13 @@ fn test_recvmsg_rxq_ovfl() {
             let mut iov = [IoSliceMut::new(&mut buffer)];
 
             match recvmsg::<()>(
-                in_socket,
+                in_socket.as_raw_fd(),
                 &mut iov,
                 Some(&mut cmsgspace),
                 MsgFlags::MSG_DONTWAIT,
             ) {
                 Ok(r) => {
-                    drop_counter = match r.cmsgs().next() {
+                    drop_counter = match r.cmsgs().unwrap().next() {
                         Some(ControlMessageOwned::RxqOvfl(drop_counter)) => {
                             drop_counter
                         }
@@ -2416,16 +2583,198 @@ fn test_recvmsg_rxq_ovfl() {
 
     // One packet lost.
     assert_eq!(drop_counter, 1);
-
-    // Close sockets
-    nix::unistd::close(in_socket).unwrap();
-    nix::unistd::close(out_socket).unwrap();
 }
 
-#[cfg(any(target_os = "linux", target_os = "android",))]
+#[cfg(any(linux_android, target_os = "freebsd"))]
+#[cfg(feature = "net")]
+// qemu doesn't seem to be emulating this correctly in these architectures
+#[cfg_attr(
+    all(
+        qemu,
+        any(
+            target_arch = "mips",
+            target_arch = "mips32r6",
+            target_arch = "mips64",
+            target_arch = "mips64r6",
+        )
+    ),
+    ignore
+)]
+#[test]
+pub fn test_ip_tos_udp() {
+    use nix::sys::socket::ControlMessageOwned;
+    use nix::sys::socket::{
+        bind, recvmsg, sendmsg, setsockopt, socket, sockopt, ControlMessage,
+        MsgFlags, SockFlag, SockType, SockaddrIn,
+    };
+
+    let sock_addr = SockaddrIn::from_str("127.0.0.1:6909").unwrap();
+    let rsock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .unwrap();
+    setsockopt(&rsock, sockopt::IpRecvTos, &true).unwrap();
+    bind(rsock.as_raw_fd(), &sock_addr).unwrap();
+
+    let sbuf = [0u8; 2048];
+    let iov1 = [std::io::IoSlice::new(&sbuf)];
+
+    let mut rbuf = [0u8; 2048];
+    let mut iov2 = [std::io::IoSliceMut::new(&mut rbuf)];
+    let mut rcmsg = cmsg_space!(libc::c_int);
+
+    let ssock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .expect("send socket failed");
+    setsockopt(&ssock, sockopt::Ipv4Tos, &20).unwrap();
+
+    // Test the sendmsg control message and check the received packet has the same TOS.
+    let scmsg = ControlMessage::Ipv4Tos(&20);
+    sendmsg(
+        ssock.as_raw_fd(),
+        &iov1,
+        &[scmsg],
+        MsgFlags::empty(),
+        Some(&sock_addr),
+    )
+    .unwrap();
+
+    // TODO: this test is weak, but testing for the actual ToS value results in sporadic
+    // failures in CI where the ToS in the message header is not the one set by the
+    // sender, so for now the test only checks for the presence of the ToS in the message
+    // header.
+    let mut tc = None;
+    let recv = recvmsg::<()>(
+        rsock.as_raw_fd(),
+        &mut iov2,
+        Some(&mut rcmsg),
+        MsgFlags::empty(),
+    )
+    .unwrap();
+    for c in recv.cmsgs().unwrap() {
+        if let ControlMessageOwned::Ipv4Tos(t) = c {
+            tc = Some(t);
+        }
+    }
+    assert!(tc.is_some());
+}
+
+#[cfg(target_os = "linux")]
+// qemu doesn't seem to be emulating this correctly in these architectures
+#[cfg_attr(
+    all(
+        qemu,
+        any(
+            target_arch = "mips",
+            target_arch = "mips32r6",
+            target_arch = "mips64",
+            target_arch = "mips64r6",
+        )
+    ),
+    ignore
+)]
+#[cfg(feature = "net")]
+#[test]
+pub fn test_ipv6_tclass_udp() {
+    use nix::sys::socket::ControlMessageOwned;
+    use nix::sys::socket::{
+        bind, recvmsg, sendmsg, setsockopt, socket, sockopt, ControlMessage,
+        MsgFlags, SockFlag, SockType, SockaddrIn6,
+    };
+
+    let std_sa = SocketAddrV6::from_str("[::1]:6902").unwrap();
+    let sock_addr: SockaddrIn6 = SockaddrIn6::from(std_sa);
+    let rsock = socket(
+        AddressFamily::Inet6,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )
+    .unwrap();
+    setsockopt(&rsock, sockopt::Ipv6RecvTClass, &true).unwrap();
+    // This bind call with IPV6_RECVTCLASS fails on the Linux aarch64 target with EADDRNOTAVAIL,
+    // so the test will only run if `bind` does not return an error..
+    if bind(rsock.as_raw_fd(), &sock_addr).is_ok() {
+        let sbuf = [0u8; 2048];
+        let iov1 = [std::io::IoSlice::new(&sbuf)];
+
+        let mut rbuf = [0u8; 2048];
+        let mut iov2 = [std::io::IoSliceMut::new(&mut rbuf)];
+        let mut rcmsg = cmsg_space!(libc::c_int);
+
+        let ssock = socket(
+            AddressFamily::Inet6,
+            SockType::Datagram,
+            SockFlag::empty(),
+            None,
+        )
+        .expect("send socket failed");
+        setsockopt(&ssock, sockopt::Ipv6TClass, &10).unwrap();
+
+        sendmsg(
+            ssock.as_raw_fd(),
+            &iov1,
+            &[],
+            MsgFlags::empty(),
+            Some(&sock_addr),
+        )
+        .unwrap();
+
+        let mut tc = None;
+        let recv = recvmsg::<()>(
+            rsock.as_raw_fd(),
+            &mut iov2,
+            Some(&mut rcmsg),
+            MsgFlags::empty(),
+        )
+        .unwrap();
+        for c in recv.cmsgs().unwrap() {
+            if let ControlMessageOwned::Ipv6TClass(t) = c {
+                tc = Some(t);
+            }
+        }
+        assert_eq!(tc, Some(10));
+
+        let scmsg = ControlMessage::Ipv6TClass(&20);
+        sendmsg(
+            ssock.as_raw_fd(),
+            &iov1,
+            &[scmsg],
+            MsgFlags::empty(),
+            Some(&sock_addr),
+        )
+        .unwrap();
+
+        let mut tc = None;
+        let recv = recvmsg::<()>(
+            rsock.as_raw_fd(),
+            &mut iov2,
+            Some(&mut rcmsg),
+            MsgFlags::empty(),
+        )
+        .unwrap();
+        for c in recv.cmsgs().unwrap() {
+            if let ControlMessageOwned::Ipv6TClass(t) = c {
+                tc = Some(t);
+            }
+        }
+
+        assert_eq!(tc, Some(20));
+    }
+}
+
+#[cfg(linux_android)]
 mod linux_errqueue {
     use super::FromStr;
     use nix::sys::socket::*;
+    use std::os::unix::io::AsRawFd;
 
     // Send a UDP datagram to a bogus destination address and observe an ICMP error (v4).
     //
@@ -2469,7 +2818,7 @@ mod linux_errqueue {
                     }
                     *ext_err
                 } else {
-                    panic!("Unexpected control message {:?}", cmsg);
+                    panic!("Unexpected control message {cmsg:?}");
                 }
             },
         )
@@ -2520,7 +2869,7 @@ mod linux_errqueue {
                     }
                     *ext_err
                 } else {
-                    panic!("Unexpected control message {:?}", cmsg);
+                    panic!("Unexpected control message {cmsg:?}");
                 }
             },
         )
@@ -2546,15 +2895,15 @@ mod linux_errqueue {
         let sock_addr = SockaddrStorage::from(std_sa);
         let sock = socket(af, SockType::Datagram, SockFlag::SOCK_CLOEXEC, None)
             .unwrap();
-        setsockopt(sock, opt, &true).unwrap();
+        setsockopt(&sock, opt, &true).unwrap();
         if let Err(e) = sendto(
-            sock,
+            sock.as_raw_fd(),
             MESSAGE_CONTENTS.as_bytes(),
             &sock_addr,
             MsgFlags::empty(),
         ) {
             assert_eq!(e, Errno::EADDRNOTAVAIL);
-            println!("{:?} not available, skipping test.", af);
+            println!("{af:?} not available, skipping test.");
             return;
         }
 
@@ -2563,14 +2912,14 @@ mod linux_errqueue {
         let mut cspace = cmsg_space!(libc::sock_extended_err, SA);
 
         let msg = recvmsg(
-            sock,
+            sock.as_raw_fd(),
             &mut iovec,
             Some(&mut cspace),
             MsgFlags::MSG_ERRQUEUE,
         )
         .unwrap();
         // The sent message / destination associated with the error is returned:
-        assert_eq!(msg.bytes, MESSAGE_CONTENTS.as_bytes().len());
+        assert_eq!(msg.bytes, MESSAGE_CONTENTS.len());
         // recvmsg(2): "The original destination address of the datagram that caused the error is
         // supplied via msg_name;" however, this is not literally true.  E.g., an earlier version
         // of this test used 0.0.0.0 (::0) as the destination address, which was mutated into
@@ -2578,7 +2927,7 @@ mod linux_errqueue {
         assert_eq!(msg.address, Some(sock_addr));
 
         // Check for expected control message.
-        let ext_err = match msg.cmsgs().next() {
+        let ext_err = match msg.cmsgs().unwrap().next() {
             Some(cmsg) => testf(&cmsg),
             None => panic!("No control message"),
         };
@@ -2626,7 +2975,7 @@ pub fn test_txtime() {
         clockid: libc::CLOCK_MONOTONIC,
         flags: 0,
     };
-    setsockopt(ssock, sockopt::TxTime, &txtime_cfg).unwrap();
+    setsockopt(&ssock, sockopt::TxTime, &txtime_cfg).unwrap();
 
     let rsock = socket(
         AddressFamily::Inet,
@@ -2635,7 +2984,7 @@ pub fn test_txtime() {
         None,
     )
     .unwrap();
-    bind(rsock, &sock_addr).unwrap();
+    bind(rsock.as_raw_fd(), &sock_addr).unwrap();
 
     let sbuf = [0u8; 2048];
     let iov1 = [std::io::IoSlice::new(&sbuf)];
@@ -2645,10 +2994,179 @@ pub fn test_txtime() {
     let txtime = (now + delay).num_nanoseconds() as u64;
 
     let cmsg = ControlMessage::TxTime(&txtime);
-    sendmsg(ssock, &iov1, &[cmsg], MsgFlags::empty(), Some(&sock_addr))
-        .unwrap();
+    sendmsg(
+        ssock.as_raw_fd(),
+        &iov1,
+        &[cmsg],
+        MsgFlags::empty(),
+        Some(&sock_addr),
+    )
+    .unwrap();
 
     let mut rbuf = [0u8; 2048];
     let mut iov2 = [std::io::IoSliceMut::new(&mut rbuf)];
-    recvmsg::<()>(rsock, &mut iov2, None, MsgFlags::empty()).unwrap();
+    recvmsg::<()>(rsock.as_raw_fd(), &mut iov2, None, MsgFlags::empty())
+        .unwrap();
+}
+
+// cfg needed for capability check.
+#[cfg(linux_android)]
+#[test]
+fn test_icmp_protocol() {
+    use nix::sys::socket::{
+        sendto, socket, AddressFamily, MsgFlags, SockFlag, SockProtocol,
+        SockType, SockaddrIn,
+    };
+
+    require_capability!("test_icmp_protocol", CAP_NET_RAW);
+
+    let owned_fd = socket(
+        AddressFamily::Inet,
+        SockType::Raw,
+        SockFlag::empty(),
+        SockProtocol::Icmp,
+    )
+    .unwrap();
+
+    // Send a minimal ICMP packet with no payload.
+    let packet = [
+        0x08, // Type
+        0x00, // Code
+        0x84, 0x85, // Checksum
+        0x73, 0x8a, // ID
+        0x00, 0x00, // Sequence Number
+    ];
+
+    let dest_addr = SockaddrIn::new(127, 0, 0, 1, 0);
+    sendto(owned_fd.as_raw_fd(), &packet, &dest_addr, MsgFlags::empty())
+        .unwrap();
+}
+
+// test contains both recvmmsg and timestaping which is linux only
+// there are existing tests for recvmmsg only in tests/
+#[cfg_attr(qemu, ignore)]
+#[cfg(target_os = "linux")]
+#[test]
+fn test_recvmm2() -> nix::Result<()> {
+    use nix::sys::{
+        socket::{
+            bind, recvmmsg, sendmsg, setsockopt, socket, sockopt::Timestamping,
+            AddressFamily, ControlMessageOwned, MsgFlags, MultiHeaders,
+            SockFlag, SockType, SockaddrIn, TimestampingFlag, Timestamps,
+        },
+        time::TimeSpec,
+    };
+    use std::io::{IoSlice, IoSliceMut};
+    use std::os::unix::io::AsRawFd;
+    use std::str::FromStr;
+
+    let sock_addr = SockaddrIn::from_str("127.0.0.1:6790").unwrap();
+
+    let ssock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::empty(),
+        None,
+    )?;
+
+    let rsock = socket(
+        AddressFamily::Inet,
+        SockType::Datagram,
+        SockFlag::SOCK_NONBLOCK,
+        None,
+    )?;
+
+    bind(rsock.as_raw_fd(), &sock_addr)?;
+
+    setsockopt(&rsock, Timestamping, &TimestampingFlag::all())?;
+
+    let sbuf = (0..400).map(|i| i as u8).collect::<Vec<_>>();
+
+    let mut recv_buf = vec![0; 1024];
+
+    let mut recv_iovs = Vec::new();
+    let mut pkt_iovs = Vec::new();
+
+    for (ix, chunk) in recv_buf.chunks_mut(256).enumerate() {
+        pkt_iovs.push(IoSliceMut::new(chunk));
+        if ix % 2 == 1 {
+            recv_iovs.push(pkt_iovs);
+            pkt_iovs = Vec::new();
+        }
+    }
+    drop(pkt_iovs);
+
+    let flags = MsgFlags::empty();
+    let iov1 = [IoSlice::new(&sbuf)];
+
+    let cmsg = cmsg_space!(Timestamps);
+    sendmsg(ssock.as_raw_fd(), &iov1, &[], flags, Some(&sock_addr)).unwrap();
+
+    let mut data = MultiHeaders::<()>::preallocate(recv_iovs.len(), Some(cmsg));
+
+    let t = TimeSpec::from_duration(std::time::Duration::from_secs(10));
+
+    let recv = recvmmsg(
+        rsock.as_raw_fd(),
+        &mut data,
+        recv_iovs.iter_mut(),
+        flags,
+        Some(t),
+    )?;
+
+    for rmsg in recv {
+        #[cfg(not(any(qemu, target_arch = "aarch64")))]
+        let mut saw_time = false;
+        let mut recvd = 0;
+        for cmsg in rmsg.cmsgs().unwrap() {
+            if let ControlMessageOwned::ScmTimestampsns(timestamps) = cmsg {
+                let ts = timestamps.system;
+
+                let sys_time = nix::time::clock_gettime(
+                    nix::time::ClockId::CLOCK_REALTIME,
+                )?;
+                let diff = if ts > sys_time {
+                    ts - sys_time
+                } else {
+                    sys_time - ts
+                };
+                assert!(std::time::Duration::from(diff).as_secs() < 60);
+                #[cfg(not(any(qemu, target_arch = "aarch64")))]
+                {
+                    saw_time = true;
+                }
+            }
+        }
+
+        #[cfg(not(any(qemu, target_arch = "aarch64")))]
+        assert!(saw_time);
+
+        for iov in rmsg.iovs() {
+            recvd += iov.len();
+        }
+        assert_eq!(recvd, 400);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "redox"))]
+#[test]
+fn can_use_cmsg_space() {
+    let _ = cmsg_space!(u8);
+}
+
+#[cfg(not(any(
+    linux_android,
+    target_os = "redox",
+    target_os = "haiku",
+    target_os = "cygwin"
+)))]
+#[test]
+fn can_open_routing_socket() {
+    use nix::sys::socket::{socket, AddressFamily, SockFlag, SockType};
+
+    let _ =
+        socket(AddressFamily::Route, SockType::Raw, SockFlag::empty(), None)
+            .expect("Failed to open routing socket");
 }
