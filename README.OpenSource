@@ -9,7 +9,7 @@
     "Description": "A Rust library that provides support for interacting with Unix-like operating systems.",
     "Dependencies": [
       "libc",
-      "bitflags"
+      "bitflags",
       "memoffset",
       "cfg-if",
       "pin-utils"
