@@ -69,4 +69,7 @@ ohos_cargo_crate("lib") {
         "user",
         "zerocopy",
     ]
+    module_output_extension = ".rlib"
+    part_name = "rust_nix"
+    subsystem_name = "thirdparty"
 }
